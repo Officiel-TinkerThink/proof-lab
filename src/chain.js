@@ -110,10 +110,11 @@ export async function receiptFiles(dir) {
     .sort();
 }
 
-// Hash and key id of the newest receipt. An empty directory is genesis; an unreadable newest receipt is an error, never GENESIS.
-export async function latestLink(dir) {
+// Hash of the newest receipt. An empty directory is genesis; an unreadable newest receipt is an error, never GENESIS.
+// The chain is not restarted when the key changes: a restart would let a whole earlier segment be removed unseen.
+export async function latestHash(dir) {
   const files = await receiptFiles(dir);
-  if (files.length === 0) return { hash: GENESIS, keyId: null };
+  if (files.length === 0) return GENESIS;
   const newest = files.at(-1);
   let parsed;
   try {
@@ -124,11 +125,7 @@ export async function latestLink(dir) {
   if (typeof parsed?.hash !== "string" || parsed.hash === "") {
     throw new Error(`previous receipt ${basename(newest)} has no hash; the chain cannot be extended`);
   }
-  return { hash: parsed.hash, keyId: typeof parsed.keyId === "string" ? parsed.keyId : null };
-}
-
-export async function latestHash(dir) {
-  return (await latestLink(dir)).hash;
+  return parsed.hash;
 }
 
 // Writes the screenshot (if any) and the signed receipt. On any failure the screenshot and the receipt fields are
@@ -147,10 +144,8 @@ export async function writeReceipt(receipt, { shot, key, dir }) {
     // Fields are re-appended so keyId and prevHash sit after `next`, the order the Go struct writes them in.
     delete receipt.keyId;
     delete receipt.prevHash;
-    const head = await latestLink(dir);
     receipt.keyId = keyIdOf(key);
-    // A new key starts a new chain: a newest receipt signed under another key id is not extended.
-    receipt.prevHash = head.keyId === receipt.keyId ? head.hash : GENESIS;
+    receipt.prevHash = await latestHash(dir);
     const body = canonicalBody(receipt);
     receipt.hash = sha256Hex(body);
     receipt.mac = signBody(body, key);
@@ -172,7 +167,6 @@ export async function verifyChain(dir, key) {
   const problems = [];
   const keyId = keyIdOf(key);
   let prev = GENESIS; // null once a receipt cannot be parsed: the next link is unknown, and the run is already invalid
-  let prevKeyId = null;
   for (const path of files) {
     const name = basename(path);
     const text = await readFile(path, "utf8");
@@ -185,15 +179,12 @@ export async function verifyChain(dir, key) {
     if (receipt === null || typeof receipt !== "object") {
       problems.push(`${name}: not a readable receipt`);
       prev = null;
-      prevKeyId = null;
       continue;
     }
     const body = canonicalBody(receipt);
-    // A receipt that starts a new chain links to GENESIS and carries a different key id from the receipt before it.
-    const startsChain = receipt.prevHash === GENESIS && receipt.keyId !== prevKeyId;
     if (fileBody(knownFieldsOnly(receipt)) !== text) {
       problems.push(`${name}: file is not the receipt this driver writes (fields added, removed, re-cased or re-spaced)`);
-    } else if (prev !== null && receipt.prevHash !== prev && !startsChain) {
+    } else if (prev !== null && receipt.prevHash !== prev) {
       problems.push(`${name}: prevHash does not link to the receipt before it`);
     } else if (sha256Hex(body) !== receipt.hash) {
       problems.push(`${name}: hash does not match the receipt body`);
@@ -203,7 +194,6 @@ export async function verifyChain(dir, key) {
       problems.push(`${name}: signature is missing or does not verify with this key`);
     }
     prev = typeof receipt.hash === "string" && receipt.hash !== "" ? receipt.hash : null;
-    prevKeyId = typeof receipt.keyId === "string" ? receipt.keyId : null;
   }
   return { problems, checked: files.length };
 }

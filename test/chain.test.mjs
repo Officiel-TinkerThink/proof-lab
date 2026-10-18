@@ -156,17 +156,28 @@ test("a receipt with an unknown field is flagged, though its hash and MAC still 
   assert.match(result.problems[0], /not the receipt this driver writes/);
 });
 
-test("a receipt under a new key starts a new chain; each key then flags the other key's receipts", async t => {
+test("a rotated key continues the same chain; each key then flags only the other key's receipts", async t => {
   const dir = await writeTwo(t);
   const rotatedKey = Buffer.from("rotated-key-not-a-secret-0123456789ab", "utf8");
   await writeReceipt(receipt("2026-01-01T00:00:00.000000009Z"), { key: rotatedKey, dir });
   const receipts = await readReceipts(dir);
-  assert.equal(receipts.at(-1).data.prevHash, GENESIS);
+  assert.equal(receipts.at(-1).data.prevHash, receipts.at(-2).data.hash);
   const underOld = await verifyChain(dir, testKey);
   assert.equal(underOld.problems.length, 1);
   assert.match(underOld.problems[0], /key id/);
   const underNew = await verifyChain(dir, rotatedKey);
   assert.equal(underNew.problems.length, 2);
+});
+
+test("removing a receipt before a key rotation breaks the link under either key", async t => {
+  const dir = await writeTwo(t);
+  const rotatedKey = Buffer.from("rotated-key-not-a-secret-0123456789ab", "utf8");
+  await writeReceipt(receipt("2026-01-01T00:00:00.000000009Z"), { key: rotatedKey, dir });
+  const [oldest] = await readReceipts(dir);
+  await chmod(oldest.path, 0o644);
+  await rm(oldest.path);
+  const result = await verifyChain(dir, rotatedKey);
+  assert.ok(result.problems.some(problem => /prevHash does not link/.test(problem)), result.problems.join("; "));
 });
 
 test("the browser environment never carries the signing key", () => {
