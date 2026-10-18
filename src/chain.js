@@ -2,7 +2,7 @@
 // Must stay byte-compatible with proof-lab-go/main.go. test/chain.test.mjs pins the shared fixture.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 
 export const KEY_ENV = "PROOF_LAB_KEY";
 export const MIN_KEY_BYTES = 32;
@@ -31,24 +31,37 @@ export function revisionOrUnknown(revision) {
   return typeof revision === "string" && REVISION.test(revision) ? revision : "unknown";
 }
 
+// Lone surrogates become U+FFFD, as Go's encoder writes them; JSON.stringify would emit \udXXX escapes instead.
+const wellFormed = (_key, value) => (typeof value === "string" ? value.toWellFormed() : value);
+
 // Canonical body: every field except hash and mac, in insertion order. Go's encoder escapes U+2028 and U+2029,
 // JSON.stringify does not, so they are escaped here to keep the bytes identical.
 export function canonicalBody(receipt) {
   const { hash: _hash, mac: _mac, ...body } = receipt;
-  return JSON.stringify(body).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  return JSON.stringify(body, wellFormed).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
 export const sha256Hex = text => createHash("sha256").update(text, "utf8").digest("hex");
 
 export const signBody = (body, key) => createHmac("sha256", key).update(body, "utf8").digest("hex");
 
+// Key ID: first 16 hex characters of SHA-256(key). It names the key without revealing it, and goes inside the signed body.
+export const keyIdOf = key => createHash("sha256").update(key).digest("hex").slice(0, 16);
+
 function macEqual(expected, actual) {
   if (typeof actual !== "string" || actual.length !== expected.length) return false;
   return timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
 }
 
+// Removes a file this process just created. Windows cannot delete a read-only file, so the flag is cleared first.
+async function discard(path) {
+  await chmod(path, 0o644).catch(() => {});
+  await rm(path, { force: true }).catch(() => {});
+}
+
 // Atomic write: a uniquely named temp file in the same directory, flushed, then renamed over the target.
-// A failure removes the temp file, so no partial *.json is ever left behind.
+// A failure removes the temp file, so no partial *.json is ever left behind. The result is read-only (0444): this
+// blocks accidental edits; it does not stop the file's owner, so the anchor (--expect-head) is the tamper check.
 export async function writeAtomic(path, data) {
   const tmp = join(dirname(path), `${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
   const handle = await open(tmp, "wx", 0o644);
@@ -60,6 +73,12 @@ export async function writeAtomic(path, data) {
   } catch (error) {
     await handle.close().catch(() => {});
     await rm(tmp, { force: true });
+    throw error;
+  }
+  try {
+    await chmod(path, 0o444);
+  } catch (error) {
+    await discard(path);
     throw error;
   }
 }
@@ -102,13 +121,17 @@ export async function writeReceipt(receipt, { shot, key, dir }) {
       await writeAtomic(shotPath, shot);
       receipt.screenshot = shotPath;
     }
+    // Fields are re-appended so keyId and prevHash sit after `next`, the order the Go struct writes them in.
+    delete receipt.keyId;
+    delete receipt.prevHash;
+    receipt.keyId = keyIdOf(key);
     receipt.prevHash = await latestHash(dir);
     const body = canonicalBody(receipt);
     receipt.hash = sha256Hex(body);
     receipt.mac = signBody(body, key);
     await writeAtomic(join(dir, `${stamp}-${rev}.json`), JSON.stringify(receipt, null, 2));
   } catch (error) {
-    if (shotPath) await rm(shotPath, { force: true });
+    if (shotPath) await discard(shotPath);
     receipt.screenshot = null;
     delete receipt.hash;
     delete receipt.mac;
@@ -138,10 +161,13 @@ export async function verifyChain(dir, key) {
       continue;
     }
     const body = canonicalBody(receipt);
+    const keyId = keyIdOf(key);
     if (prev !== null && receipt.prevHash !== prev) {
       problems.push(`${name}: prevHash does not link to the receipt before it`);
     } else if (sha256Hex(body) !== receipt.hash) {
       problems.push(`${name}: hash does not match the receipt body`);
+    } else if (receipt.keyId !== keyId) {
+      problems.push(`${name}: signed under key id ${receipt.keyId}, not this key (${keyId}); rotated keys need their own chain`);
     } else if (!macEqual(signBody(body, key), receipt.mac)) {
       problems.push(`${name}: signature is missing or does not verify with this key`);
     }
