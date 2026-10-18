@@ -166,7 +166,7 @@ export async function verifyChain(dir, key) {
   if (files.length === 0) throw new Error(`no receipts in ${dir}`);
   const problems = [];
   const keyId = keyIdOf(key);
-  let prev = GENESIS; // null once a receipt cannot be parsed: the next link is unknown, and the run is already invalid
+  let prev = GENESIS; // null once a receipt cannot be parsed: the next link is unknown, and the run is already invalid. "" is a stored hash, not unknown.
   for (const path of files) {
     const name = basename(path);
     const text = await readFile(path, "utf8");
@@ -193,7 +193,7 @@ export async function verifyChain(dir, key) {
     } else if (!macEqual(signBody(body, key), receipt.mac)) {
       problems.push(`${name}: signature is missing or does not verify with this key`);
     }
-    prev = typeof receipt.hash === "string" && receipt.hash !== "" ? receipt.hash : null;
+    prev = typeof receipt.hash === "string" ? receipt.hash : null;
   }
   return { problems, checked: files.length };
 }

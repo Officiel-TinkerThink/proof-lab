@@ -169,6 +169,17 @@ test("a rotated key continues the same chain; each key then flags only the other
   assert.equal(underNew.problems.length, 2);
 });
 
+test("a blanked stored hash fails its own check, and the next receipt's link is still checked against it", async t => {
+  const dir = await writeTwo(t);
+  const [first] = await readReceipts(dir);
+  const text = await readFile(first.path, "utf8");
+  const edited = text.replace(/"hash": "[0-9a-f]+"/, '"hash": ""');
+  await chmod(first.path, 0o644);
+  await writeFile(first.path, edited);
+  const result = await verifyChain(dir, testKey);
+  assert.ok(result.problems.some(problem => /prevHash does not link/.test(problem)), result.problems.join("; "));
+});
+
 test("removing a receipt before a key rotation breaks the link under either key", async t => {
   const dir = await writeTwo(t);
   const rotatedKey = Buffer.from("rotated-key-not-a-secret-0123456789ab", "utf8");
