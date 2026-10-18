@@ -1,28 +1,26 @@
-// prove: drive the waitlist app as a fresh visitor, record checks, write a receipt.
+// prove: drive the waitlist app as a fresh visitor, record checks, write a signed receipt.
 // Verdicts: PASS (exit 0), FAIL (exit 1), ERROR = can't tell (exit 2).
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+// Verify: node src/prove.js --verify [--receipts <dir>] [--expect-head <hash>]  (0 intact, 1 tampered, 2 cannot verify)
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { startApp } from "./server.js";
+import {
+  GENESIS,
+  fixedStamp,
+  latestHash,
+  signingKey,
+  verifyChain,
+  writeReceipt,
+} from "./chain.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const RECEIPTS = join(ROOT, "receipts");
+const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts");
 const EMAIL = "ada@example.test";
 const KEY = "waitlist-record";
 const TIMEOUT_MS = 3000;
 
-const sha256 = text => createHash("sha256").update(text).digest("hex");
 const firstLine = error => (error instanceof Error ? error.message : String(error)).split("\n")[0];
-
-async function latestHash() {
-  await mkdir(RECEIPTS, { recursive: true });
-  const names = (await readdir(RECEIPTS)).filter(name => name.endsWith(".json")).sort();
-  if (!names.length) return "GENESIS";
-  const last = JSON.parse(await readFile(join(RECEIPTS, names.at(-1)), "utf8"));
-  return last.hash;
-}
 
 async function serverRevision(url) {
   const response = await fetch(new URL("/__revision", url), { signal: AbortSignal.timeout(2000) });
@@ -33,14 +31,14 @@ async function pageRevision(page) {
   return page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 }
 
-export async function prove({ url, bug } = {}) {
+export async function prove({ url, bug, receiptsDir = DEFAULT_RECEIPTS, key = signingKey() } = {}) {
   let server = null;
   const receipt = {
     verdict: "ERROR",
     app: url ?? null,
     bug: bug ?? null,
     revision: null,
-    at: new Date().toISOString(),
+    at: fixedStamp(),
     checks: [],
     pageErrors: [],
     screenshot: null,
@@ -49,6 +47,7 @@ export async function prove({ url, bug } = {}) {
   };
   const pageErrors = new Set();
   let browser = null;
+  let shot = null;
 
   try {
     if (!url) {
@@ -110,10 +109,7 @@ export async function prove({ url, bug } = {}) {
       receipt.verdict = receipt.checks.every(entry => entry.pass) ? "PASS" : "FAIL";
     }
 
-    await mkdir(RECEIPTS, { recursive: true });
-    const shot = join(RECEIPTS, `${receipt.at.replace(/[:.]/g, "-")}-${loadedRevision ?? "unknown"}.png`);
-    await page.screenshot({ path: shot, fullPage: true });
-    receipt.screenshot = shot;
+    shot = await page.screenshot({ fullPage: true });
   } catch (error) {
     receipt.verdict = "ERROR";
     receipt.error = `prove failed: ${firstLine(error)}`;
@@ -132,19 +128,63 @@ export async function prove({ url, bug } = {}) {
     receipt.next = [receipt.error ?? "Unknown error.", "Can't tell is not the same as broken: run it again once the app is stable."];
   }
 
-  // Tamper evidence: each receipt commits to the one before it.
-  receipt.prevHash = await latestHash();
-  const { hash: _unused, ...body } = receipt;
-  receipt.hash = sha256(JSON.stringify(body));
-  await writeFile(join(RECEIPTS, `${receipt.at.replace(/[:.]/g, "-")}-${receipt.revision ?? "unknown"}.json`), JSON.stringify(receipt, null, 2));
+  // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
+  try {
+    await writeReceipt(receipt, { shot, key, dir: receiptsDir });
+  } catch (error) {
+    receipt.verdict = "ERROR";
+    receipt.error = `receipt write failed: ${firstLine(error)}`;
+    receipt.next = [receipt.error, "No receipt file was written, so this run is not evidence. Fix the receipts directory and run again."];
+  }
   return receipt;
 }
 
-// CLI: node src/prove.js [--url <http://...>] [--bug <name>]
+// verifyReceipts returns the exit code: 0 intact, 1 tampered, unsigned or not the expected head, 2 cannot verify.
+export async function verifyReceipts({ receiptsDir = DEFAULT_RECEIPTS, key, expectHead = "" } = {}) {
+  let result;
+  try {
+    result = await verifyChain(receiptsDir, key);
+  } catch (error) {
+    console.error(`cannot verify: ${firstLine(error)}`);
+    return 2;
+  }
+  const problems = [...result.problems];
+  let head = null;
+  try {
+    head = await latestHash(receiptsDir);
+  } catch (error) {
+    problems.push(`head: ${firstLine(error)}`);
+  }
+  if (expectHead && head !== expectHead) {
+    problems.push("head does not match --expect-head: receipts were added or removed since that head was recorded");
+  }
+  problems.forEach(problem => console.log(problem));
+  if (problems.length > 0) {
+    console.log(`INVALID: ${problems.length} problem(s), ${result.checked} receipts checked`);
+    return 1;
+  }
+  console.log(`VALID: ${result.checked} receipts, hash chain and signatures intact\nhead: ${head ?? GENESIS}`);
+  return 0;
+}
+
+// CLI: node src/prove.js [--url <http://...>] [--bug <name>] [--receipts <dir>] | --verify [--expect-head <hash>]
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-  const receipt = await prove({ url: flag("--url"), bug: flag("--bug") });
-  console.log(JSON.stringify(receipt, null, 2));
-  process.exitCode = receipt.verdict === "PASS" ? 0 : receipt.verdict === "FAIL" ? 1 : 2;
+  let key;
+  try {
+    key = signingKey();
+  } catch (error) {
+    console.error(firstLine(error));
+    process.exitCode = 2;
+  }
+  if (key) {
+    if (args.includes("--verify")) {
+      process.exitCode = await verifyReceipts({ receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS, key, expectHead: flag("--expect-head") });
+    } else {
+      const receipt = await prove({ url: flag("--url"), bug: flag("--bug"), receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS, key });
+      console.log(JSON.stringify(receipt, null, 2));
+      process.exitCode = receipt.verdict === "PASS" ? 0 : receipt.verdict === "FAIL" ? 1 : 2;
+    }
+  }
 }
