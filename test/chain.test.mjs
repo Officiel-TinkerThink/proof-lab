@@ -111,8 +111,8 @@ test("a written receipt is read-only: no write bit is set and a plain write is r
   const [first] = await readReceipts(dir);
   const { mode } = await stat(first.path);
   assert.equal(mode & 0o222, 0, `receipt keeps a write bit: ${mode.toString(8)}`);
-  // Refused on Windows and on non-root POSIX. A root process on POSIX bypasses file modes, so this is not a boundary there.
-  await assert.rejects(writeFile(first.path, "tamper"));
+  // A root process on POSIX bypasses file modes, so the refusal is only asserted for non-root users.
+  if (process.getuid?.() !== 0) await assert.rejects(writeFile(first.path, "tamper"));
 });
 
 test("an edited receipt is flagged, even after its read-only flag is cleared", async t => {
@@ -120,7 +120,7 @@ test("an edited receipt is flagged, even after its read-only flag is cleared", a
   const [first] = await readReceipts(dir);
   const text = await readFile(first.path, "utf8");
   const edited = text.replace('"verdict": "PASS"', '"verdict": "FAIL"');
-  await assert.rejects(writeFile(first.path, edited));
+  if (process.getuid?.() !== 0) await assert.rejects(writeFile(first.path, edited));
   // An attacker with rights can clear the read-only flag. The chain must still catch the edit.
   await chmod(first.path, 0o644);
   await writeFile(first.path, edited);
