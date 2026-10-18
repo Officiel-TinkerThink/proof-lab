@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 import { startApp } from "./server.js";
 import {
   GENESIS,
+  environmentWithoutKey,
   fixedStamp,
   latestHash,
   signingKey,
@@ -54,7 +55,7 @@ export async function prove({ url, bug, receiptsDir = DEFAULT_RECEIPTS, key = si
       server = await startApp({ bug });
       receipt.app = server.url;
     }
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
     const context = await browser.newContext(); // fresh visitor: no storage
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT_MS);

@@ -41,6 +41,25 @@ export function canonicalBody(receipt) {
   return JSON.stringify(body, wellFormed).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
+// Stored fields in the order the Go struct writes them. A file is valid only if it is exactly these fields, in this order.
+const STORED_FIELDS = ["verdict", "app", "bug", "revision", "at", "checks", "pageErrors", "screenshot", "error", "next", "keyId", "prevHash", "hash", "mac"];
+
+// Receipt file body: two-space indent and the same escapes as canonicalBody, so Node and Go write identical bytes.
+export function fileBody(receipt) {
+  return JSON.stringify(receipt, wellFormed, 2).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
+// The stored fields only, in file order: unknown keys are dropped, so a file that carries any extra key differs from it.
+export function knownFieldsOnly(parsed) {
+  return Object.fromEntries(STORED_FIELDS.filter(name => name in parsed).map(name => [name, parsed[name]]));
+}
+
+// The browser inherits the environment unless told otherwise, so the signing key is withheld from its launch.
+export function environmentWithoutKey(env = process.env) {
+  const { [KEY_ENV]: _key, ...rest } = env;
+  return rest;
+}
+
 export const sha256Hex = text => createHash("sha256").update(text, "utf8").digest("hex");
 
 export const signBody = (body, key) => createHmac("sha256", key).update(body, "utf8").digest("hex");
@@ -91,10 +110,10 @@ export async function receiptFiles(dir) {
     .sort();
 }
 
-// Hash of the newest receipt. An empty directory is genesis; an unreadable newest receipt is an error, never GENESIS.
-export async function latestHash(dir) {
+// Hash and key id of the newest receipt. An empty directory is genesis; an unreadable newest receipt is an error, never GENESIS.
+export async function latestLink(dir) {
   const files = await receiptFiles(dir);
-  if (files.length === 0) return GENESIS;
+  if (files.length === 0) return { hash: GENESIS, keyId: null };
   const newest = files.at(-1);
   let parsed;
   try {
@@ -105,7 +124,11 @@ export async function latestHash(dir) {
   if (typeof parsed?.hash !== "string" || parsed.hash === "") {
     throw new Error(`previous receipt ${basename(newest)} has no hash; the chain cannot be extended`);
   }
-  return parsed.hash;
+  return { hash: parsed.hash, keyId: typeof parsed.keyId === "string" ? parsed.keyId : null };
+}
+
+export async function latestHash(dir) {
+  return (await latestLink(dir)).hash;
 }
 
 // Writes the screenshot (if any) and the signed receipt. On any failure the screenshot and the receipt fields are
@@ -124,12 +147,14 @@ export async function writeReceipt(receipt, { shot, key, dir }) {
     // Fields are re-appended so keyId and prevHash sit after `next`, the order the Go struct writes them in.
     delete receipt.keyId;
     delete receipt.prevHash;
+    const head = await latestLink(dir);
     receipt.keyId = keyIdOf(key);
-    receipt.prevHash = await latestHash(dir);
+    // A new key starts a new chain: a newest receipt signed under another key id is not extended.
+    receipt.prevHash = head.keyId === receipt.keyId ? head.hash : GENESIS;
     const body = canonicalBody(receipt);
     receipt.hash = sha256Hex(body);
     receipt.mac = signBody(body, key);
-    await writeAtomic(join(dir, `${stamp}-${rev}.json`), JSON.stringify(receipt, null, 2));
+    await writeAtomic(join(dir, `${stamp}-${rev}.json`), fileBody(receipt));
   } catch (error) {
     if (shotPath) await discard(shotPath);
     receipt.screenshot = null;
@@ -145,7 +170,9 @@ export async function verifyChain(dir, key) {
   const files = await receiptFiles(dir);
   if (files.length === 0) throw new Error(`no receipts in ${dir}`);
   const problems = [];
+  const keyId = keyIdOf(key);
   let prev = GENESIS; // null once a receipt cannot be parsed: the next link is unknown, and the run is already invalid
+  let prevKeyId = null;
   for (const path of files) {
     const name = basename(path);
     const text = await readFile(path, "utf8");
@@ -158,20 +185,25 @@ export async function verifyChain(dir, key) {
     if (receipt === null || typeof receipt !== "object") {
       problems.push(`${name}: not a readable receipt`);
       prev = null;
+      prevKeyId = null;
       continue;
     }
     const body = canonicalBody(receipt);
-    const keyId = keyIdOf(key);
-    if (prev !== null && receipt.prevHash !== prev) {
+    // A receipt that starts a new chain links to GENESIS and carries a different key id from the receipt before it.
+    const startsChain = receipt.prevHash === GENESIS && receipt.keyId !== prevKeyId;
+    if (fileBody(knownFieldsOnly(receipt)) !== text) {
+      problems.push(`${name}: file is not the receipt this driver writes (fields added, removed, re-cased or re-spaced)`);
+    } else if (prev !== null && receipt.prevHash !== prev && !startsChain) {
       problems.push(`${name}: prevHash does not link to the receipt before it`);
     } else if (sha256Hex(body) !== receipt.hash) {
       problems.push(`${name}: hash does not match the receipt body`);
     } else if (receipt.keyId !== keyId) {
-      problems.push(`${name}: signed under key id ${receipt.keyId}, not this key (${keyId}); rotated keys need their own chain`);
+      problems.push(`${name}: signed under key id ${receipt.keyId}, not this key (${keyId}); verify it with the key for that id`);
     } else if (!macEqual(signBody(body, key), receipt.mac)) {
       problems.push(`${name}: signature is missing or does not verify with this key`);
     }
     prev = typeof receipt.hash === "string" && receipt.hash !== "" ? receipt.hash : null;
+    prevKeyId = typeof receipt.keyId === "string" ? receipt.keyId : null;
   }
   return { problems, checked: files.length };
 }

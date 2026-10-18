@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   GENESIS,
   canonicalBody,
+  environmentWithoutKey,
   keyIdOf,
   latestHash,
   signBody,
@@ -141,4 +142,34 @@ test("latestHash is GENESIS for an empty directory and the newest hash otherwise
   await writeReceipt(receipt("2026-01-01T00:00:00.000000007Z"), { key: testKey, dir });
   const [stored] = await readReceipts(dir);
   assert.equal(await latestHash(dir), stored.data.hash);
+});
+
+test("a receipt with an unknown field is flagged, though its hash and MAC still match", async t => {
+  const dir = await writeTwo(t);
+  const [first] = await readReceipts(dir);
+  const text = await readFile(first.path, "utf8");
+  const edited = text.replace('"verdict": "PASS"', '"x": 1,\n  "verdict": "PASS"');
+  await chmod(first.path, 0o644);
+  await writeFile(first.path, edited);
+  const result = await verifyChain(dir, testKey);
+  assert.equal(result.problems.length, 1);
+  assert.match(result.problems[0], /not the receipt this driver writes/);
+});
+
+test("a receipt under a new key starts a new chain; each key then flags the other key's receipts", async t => {
+  const dir = await writeTwo(t);
+  const rotatedKey = Buffer.from("rotated-key-not-a-secret-0123456789ab", "utf8");
+  await writeReceipt(receipt("2026-01-01T00:00:00.000000009Z"), { key: rotatedKey, dir });
+  const receipts = await readReceipts(dir);
+  assert.equal(receipts.at(-1).data.prevHash, GENESIS);
+  const underOld = await verifyChain(dir, testKey);
+  assert.equal(underOld.problems.length, 1);
+  assert.match(underOld.problems[0], /key id/);
+  const underNew = await verifyChain(dir, rotatedKey);
+  assert.equal(underNew.problems.length, 2);
+});
+
+test("the browser environment never carries the signing key", () => {
+  const env = { PROOF_LAB_KEY: "x".repeat(32), PATH: "/bin" };
+  assert.deepEqual(environmentWithoutKey(env), { PATH: "/bin" });
 });
