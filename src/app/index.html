@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waitlist practice page</title>
+<style>
+:root{color-scheme:light;font-family:system-ui,sans-serif;color:#20202b;background:#f9f9fc}
+body{margin:0}main{max-width:620px;margin:auto;padding:40px 24px}
+h1{font-size:32px;margin:0 0 16px}
+label{display:block;font-weight:600;margin-bottom:8px}
+input,button{font:inherit;border-radius:6px;padding:12px 14px;min-height:46px}
+input{width:100%;border:1px solid #838292}
+button{margin-top:12px;background:#5541d8;color:#fff;border:0;cursor:pointer}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px}
+dt{color:#565566}dd{margin:0}
+</style>
+</head>
+<body><main>
+<h1>Waitlist practice page</h1>
+<form id="join">
+  <label for="email-input">Email</label>
+  <input id="email-input" type="email" autocomplete="off" required placeholder="you@example.test">
+  <button type="submit">Join waitlist</button>
+</form>
+<section aria-label="Your local request">
+  <dl>
+    <dt>Request status</dt><dd data-testid="status">none</dd>
+    <dt>Saved email</dt><dd data-testid="email">—</dd>
+  </dl>
+  <p role="status" aria-live="polite"></p>
+</section>
+<script>
+const KEY = "waitlist-record";
+const CONFIRMATION = "You're on the waitlist. We'll email you if a place opens up.";
+const input = document.getElementById("email-input");
+const statusEl = document.querySelector("[data-testid=status]");
+const emailEl = document.querySelector("[data-testid=email]");
+const confirmationEl = document.querySelector("[role=status]");
+
+function show(record) {
+  statusEl.textContent = record ? record.status : "none";
+  emailEl.textContent = record ? record.email : "—";
+  confirmationEl.textContent = record ? CONFIRMATION : "";
+}
+
+function loadRecord() {
+  try {
+    return JSON.parse(localStorage.getItem(KEY));
+  } catch {
+    return null;
+  }
+}
+
+show(loadRecord());
+
+document.getElementById("join").addEventListener("submit", event => {
+  event.preventDefault();
+  const record = { status: "waitlisted", email: input.value.trim() };
+  try {
+    localStorage.setItem(KEY, JSON.stringify(record));
+  } catch {
+    confirmationEl.textContent = "Could not save in this browser.";
+    return;
+  }
+  show(record);
+});
+</script>
+</main></body>
+</html>

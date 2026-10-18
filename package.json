@@ -1,0 +1,17 @@
+{
+  "name": "proof-lab",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Experiment: agent self-verification with receipts (Playwright driver)",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "serve": "node src/server.js",
+    "prove": "node src/prove.js"
+  },
+  "dependencies": {
+    "playwright": "1.64.0"
+  }
+}
