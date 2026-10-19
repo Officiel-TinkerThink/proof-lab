@@ -1,0 +1,22 @@
+{
+  "name": "waitlist",
+  "steps": [
+    { "op": "assertText", "name": "fresh visitor sees no request", "selector": "[data-testid=\"status\"]", "equals": "none" },
+    { "op": "fill", "label": "Email", "value": "ada@example.test" },
+    { "op": "click", "role": "button", "name": "Join waitlist" },
+    { "op": "waitFor", "selector": "[data-testid=\"status\"]", "hasText": "waitlisted", "optional": true },
+    { "op": "assertText", "name": "status shows waitlisted after join", "selector": "[data-testid=\"status\"]", "equals": "waitlisted",
+      "hint": "The form did not move to waitlisted. Check the submit handler and the status element." },
+    { "op": "assertText", "name": "confirmation shows after join", "selector": "[role=\"status\"]", "contains": "waitlist",
+      "hint": "No confirmation after submit. Show the waitlist confirmation when a record exists." },
+    { "op": "reload" },
+    { "op": "assertText", "name": "status survives reload", "selector": "[data-testid=\"status\"]", "equals": "waitlisted",
+      "hint": "The record vanished on reload. Persist it to localStorage under the key waitlist-record." },
+    { "op": "assertText", "name": "email survives reload", "selector": "[data-testid=\"email\"]", "equals": "ada@example.test",
+      "hint": "The saved email is not the one typed. Persist the address the visitor entered." },
+    { "op": "assertText", "name": "confirmation survives reload", "selector": "[role=\"status\"]", "contains": "waitlist",
+      "hint": "The confirmation is missing after reload. Show the waitlist confirmation when a saved record exists." },
+    { "op": "assertStorage", "name": "record is in localStorage", "key": "waitlist-record", "path": "email", "equals": "ada@example.test",
+      "hint": "localStorage holds no record with the visitor's email. What the page shows is not what was saved." }
+  ]
+}

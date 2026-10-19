@@ -60,7 +60,7 @@ export function canonicalBody(receipt) {
 }
 
 // Stored fields in the order the Go struct writes them. A file is valid only if it is exactly these fields, in this order.
-const STORED_FIELDS = ["verdict", "app", "bug", "revision", "at", "checks", "pageErrors", "screenshot", "error", "next", "keyId", "prevHash", "hash", "mac"];
+const STORED_FIELDS = ["verdict", "app", "bug", "spec", "revision", "at", "checks", "pageErrors", "screenshot", "error", "next", "keyId", "prevHash", "hash", "mac"];
 
 // Receipt file body: two-space indent and the same escapes as canonicalBody, so Node and Go write identical bytes.
 export function fileBody(receipt) {
