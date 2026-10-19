@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createContext, runStep } from "./run-spec.js";
 import { startApp } from "./server.js";
-import { clipValue, redactSecrets } from "./spec/evidence.js";
+import { clipValue, hideTokenSegments, redactSecrets, scrubRecord } from "./spec/evidence.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
@@ -50,11 +50,12 @@ export function actionableElements(aria) {
 function withoutQuery(url) {
   try {
     const parsed = new URL(url);
-    // about:, data:, chrome-error: and the like have an opaque or no origin ("null"): show scheme, host and path without query or fragment.
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return clipValue(`${parsed.protocol}${parsed.host ? `//${parsed.host}` : ""}${parsed.pathname}`, 200);
-    return clipValue(redactSecrets(`${parsed.origin}${parsed.pathname}`), 200);
+    // about: has no origin: scheme and path without query or fragment. data:, blob: and the like can hold the content itself.
+    if (parsed.protocol === "about:") return clipValue(`${parsed.protocol}${parsed.pathname}`, 200);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return `${parsed.protocol}[hidden]`;
+    return clipValue(`${parsed.origin}${hideTokenSegments(parsed.pathname)}`, 200);
   } catch {
-    return clipValue(String(url).split("?")[0], 200);
+    return "[unparseable address]";
   }
 }
 
@@ -169,7 +170,9 @@ export async function look({ url, specPath, until, screenshotPath }) {
       await writeFile(screenshotPath, png, { flag: "wx" }); // never replaces a file that is already there
       screenshot = screenshotPath;
     }
-    return {
+    // Choke point: whatever the page showed (title, names, ids, storage keys, replayed step notes) is scrubbed once
+    // here; the picture path is the caller's own.
+    return scrubRecord({
       url: withoutQuery(view.url()),
       title,
       status: documentStatuses.get(view.url().split("#")[0]) ?? null,
@@ -183,7 +186,7 @@ export async function look({ url, specPath, until, screenshotPath }) {
       pageErrors,
       failedRequests,
       screenshot,
-    };
+    }, ["screenshot", "status"]);
   } finally {
     if (session) await session.close();
     if (server) await server.close().catch(() => {});

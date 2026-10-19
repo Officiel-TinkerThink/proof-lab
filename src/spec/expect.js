@@ -5,7 +5,7 @@
 // If the action itself fails, no expectation is recorded: the step is already a failed check and the missing event is
 // a consequence, not a second finding.
 import { readFile, stat } from "node:fs/promises";
-import { clipValue, redactSecrets } from "./evidence.js";
+import { clipValue, hideQuery, redactSecrets } from "./evidence.js";
 import { matcher } from "./steps.js";
 import { bounded, firstLine } from "./util.js";
 
@@ -20,19 +20,7 @@ const ACTUAL_TEXT_CHARS = 200;
 export const matchOf = value => matcher(typeof value === "string" ? { equals: value } : value);
 
 // A popup address can carry a code or token in its query or fragment: the evidence keeps the origin and path only.
-export function hideQuery(url) {
-  try {
-    const parsed = new URL(url);
-    // about:blank has no origin; data: and blob: addresses can hold the content itself, so only the scheme is kept.
-    if (parsed.protocol === "about:") return clipValue(url, 100);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return `${parsed.protocol}[hidden]`;
-    // A reset link keeps its token in the path: a segment of 16 or more characters that mixes letters and digits is hidden.
-    const path = parsed.pathname.split("/").map(segment => (segment.length >= 16 && /\d/.test(segment) && /[A-Za-z]/.test(segment) ? "[hidden]" : segment)).join("/");
-    return redactSecrets(`${parsed.origin}${path}${parsed.search ? "?[query hidden]" : ""}${parsed.hash ? "#[hash hidden]" : ""}`);
-  } catch {
-    return "[unparseable address]"; // the raw text could hold a query
-  }
-}
+export { hideQuery };
 
 const without = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
 

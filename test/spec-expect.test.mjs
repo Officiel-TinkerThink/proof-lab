@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { validateSpec } from "../src/run-spec.js";
 import { redactSecrets } from "../src/spec/evidence.js";
 import { hideQuery } from "../src/spec/expect.js";
-import { TIMEOUT, explain, failedChecks, page, runInline } from "./spec-helpers.mjs";
+import { TIMEOUT, explain, failedChecks, page, runInline, withRun } from "./spec-helpers.mjs";
 
 const DIALOGS = "/fixtures/dialogs.html";
 const POPUPS = "/fixtures/popups.html";
@@ -303,7 +303,14 @@ test("redactSecrets: schemes, key variants, quoted and encoded values, and key m
     ["password: correct horse battery", "password: [redacted]"],
     ['login failed password="ab cd"', 'login failed password="[redacted]"'],
     ['{"password":"x y z"}', '{"password":"[redacted]"}'],
-    ['{\\"token\\":\\"abc def\\"}', '{\\"token\\":\\"[redacted]"}'],
+    ['{\\"token\\":\\"abc def\\"}', '{\\"token\\":\\"[redacted]\\"}'],
+    ["password: ab'cd efgh", "password: [redacted]"],
+    ['{"password":"ab\\"cd"}', '{"password":"[redacted]"}'],
+    ["API key: abc def", "API key: [redacted]"],
+    ["Session ID: zz9", "Session ID: [redacted]"],
+    ["jwt eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0. end", "jwt [redacted jwt] end"],
+    ["k sk_live_abcdefghijklmnop1234 e", "k [redacted token] e"],
+    ["http://:pw@host/x", "http://:[redacted]@host/x"],
     ["a?token%3Dabcdef1&x=1", "a?token%3D[redacted]&x=1"],
     ["Cookie: sid=abc123; theme=dark", "Cookie: [redacted]"],
     ["db_password=hunter2 private_key=zz", "db_password=[redacted] private_key=[redacted]"],
@@ -326,12 +333,79 @@ test("redactSecrets: a long hostile input finishes quickly", () => {
   redactSecrets("a-".repeat(50_000));
   redactSecrets(`${"x".repeat(60_000)} token`);
   redactSecrets(`Basic ${" ".repeat(60_000)}`);
-  assert.ok(performance.now() - started < 2000, "linear-time redaction");
+  redactSecrets("token:".repeat(20_000));
+  redactSecrets(`${"a1".repeat(40_000)}g`);
+  redactSecrets("-----BEGIN PRIVATE KEY-----".repeat(5_000));
+  redactSecrets(`password=\"${"x\\".repeat(40_000)}`);
+  redactSecrets("aB3/".repeat(30_000));
+  assert.ok(performance.now() - started < 3000, "linear-time redaction on text of any length");
+  assert.equal(redactSecrets("word ".repeat(30_000)).length, 150_000, "long ordinary text is kept whole");
 });
 
 test("hideQuery: a token in the path is hidden too", () => {
   assert.equal(hideQuery("http://h.test/reset/a1b2c3d4e5f6g7h8i9j0/confirm"), "http://h.test/reset/[hidden]/confirm");
+  assert.equal(hideQuery("http://h.test/reset/abcdefghijklmnopqrstuvwxyz/confirm"), "http://h.test/reset/[hidden]/confirm");
   assert.equal(hideQuery("http://h.test/items/12345"), "http://h.test/items/12345");
+  assert.equal(hideQuery("http://h.test/authentication-settings/forms.html"), "http://h.test/authentication-settings/forms.html");
+  assert.equal(hideQuery("about:blank?code=ab12cd34#x"), "about:blank");
+});
+
+test("scrubValue: a value nested deeper than the depth limit and an object key are scrubbed too", async () => {
+  const { scrubValue } = await import("../src/spec/evidence.js");
+  const deep = { a: { b: { c: { d: { e: { f: { g: { s: "password: hunter2hunter2" } } } } } } } };
+  assert.doesNotMatch(JSON.stringify(scrubValue(deep)), /hunter2/);
+  assert.doesNotMatch(JSON.stringify(scrubValue({ "token=abcdef123": 1 })), /abcdef123/);
+  assert.equal(scrubValue(new Date("2026-01-02T03:04:05Z")), "2026-01-02T03:04:05.000Z");
+});
+
+test("record: a step that names a credential records its length and fingerprint, never the value", async () => {
+  const { createContext } = await import("../src/run-spec.js");
+  const checks = [];
+  const ctx = createContext({ page: {}, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks });
+  ctx.record({ op: "assertStorage", key: "authToken" }, false, "equals opaque-expected", "opaque-actual-1", undefined);
+  ctx.record({ op: "assertValue", label: "Password" }, true, "equals x", "hunter2", undefined);
+  ctx.record({ op: "assertValue", label: "Name" }, false, "equals x", "Ada", undefined);
+  ctx.record({ op: "assertState", name: "Show password" }, true, "enabled", true, undefined);
+  const text = JSON.stringify(checks);
+  assert.doesNotMatch(text, /opaque-actual-1|opaque-expected|hunter2/);
+  assert.match(checks[0].actual, /^\(masked, 15 characters, hmac [0-9a-f]{8}\)$/);
+  assert.equal(checks[2].actual, "Ada", "an ordinary field is recorded as it is");
+  assert.equal(checks[3].actual, true, "a button called Show password is not a credential");
+});
+
+test("assertUrl: the match sees the whole address, the record never shows its query", async () => {
+  const { STEPS } = await import("../src/spec/steps.js");
+  const recorded = [];
+  const ctx = { timeoutMs: 100, page: { url: () => "http://127.0.0.1:4173/done?code=ab12cd34&state=x" }, record: (...args) => recorded.push(args) };
+  await STEPS.assertUrl(ctx, { op: "assertUrl", contains: "code=ab12cd34", timeout: 0 });
+  await STEPS.assertUrl(ctx, { op: "assertUrl", contains: "never", timeout: 0 });
+  assert.equal(recorded[0][1], true, "the match used the real address");
+  assert.equal(recorded[1][1], false);
+  assert.equal(recorded[1][3], "http://127.0.0.1:4173/done?[query hidden]");
+});
+
+test("closeTab: if the tab will not close, the run stays on it and the step fails", async () => {
+  const { STEPS } = await import("../src/spec/steps.js");
+  const other = { bringToFront: async () => {} };
+  const closing = { context: () => ({ pages: () => [other, closing] }), close: async () => { throw new Error("close refused"); } };
+  const ctx = { page: closing };
+  await assert.rejects(STEPS.closeTab(ctx, { op: "closeTab" }), /close refused/);
+  assert.equal(ctx.page, closing);
+});
+
+test("choke point: no field of the receipt or the evidence file holds a credential, whichever path put it there", TIMEOUT, async () => {
+  const { readFile } = await import("node:fs/promises");
+  // withRun reads inside the callback: the receipts directory is removed when it returns.
+  await withRun(page("/fixtures/forms.html", [
+    { op: "assertTitle", check: "title check token=namesecret88", equals: "nope", hint: "hint password=hintsecret77", timeout: 0 },
+    { op: "review", check: "tone api_key=reviewsecret66", note: "secret=notesecret55" },
+    { op: "click", selector: "#no-such", optional: true, timeout: 100, hint: "cookie: optsecret44" },
+  ]), async receipt => {
+    const evidence = await readFile(receipt.detail.evidencePath, "utf8");
+    const text = JSON.stringify(receipt) + evidence;
+    assert.doesNotMatch(text, /namesecret88|hintsecret77|reviewsecret66|notesecret55|optsecret44/, explain(receipt));
+    assert.match(text, /title check token=\[redacted\]/, "the label stays readable");
+  });
 });
 
 test("scrubValue: every string inside a check value is redacted", async () => {

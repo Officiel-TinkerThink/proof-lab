@@ -1,6 +1,7 @@
 // A receipt is a summary: verdict, totals and the checks that failed. Everything else a reader might want to
 // investigate (every check, the step timeline, console output) goes to an evidence file kept next to the receipt.
 // The receipt carries the evidence file's hash, so the details cannot be swapped without the signature failing.
+import { createHmac, randomBytes } from "node:crypto";
 
 // The file name suffix is EVIDENCE_SUFFIX in chain.js, which writes and verifies the file.
 export const MAX_LISTED_FAILURES = 20;
@@ -14,9 +15,10 @@ function clipText(text, limit) {
 
 // Console and page-error text is the app's own and can carry a credential it logged by mistake. Anything shaped like
 // one is replaced before the text reaches a receipt or the evidence file; the key name stays, so the line is still useful.
-// Names that mark a value as a credential. The long ones match inside a longer key (db_password, x-auth-token); the
-// short ones only as the whole key, so "author" and "bypass" are left alone.
-const KEY = String.raw`(?:\b[\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credentials?|cookie|session(?:id)?)[\w-]*|\b(?:pass|auth|sid)\b)`;
+// Names that mark a value as a credential. The long ones match inside a longer key (db_password, x-auth-token): the part
+// before the name needs no match, and the part after is bounded, so no input makes the match cost more than linear time.
+// The short ones only as the whole key, so "author" and "bypass" are left alone.
+const KEY = String.raw`(?:(?:password|passwd|passphrase|passcode|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|credentials?|cookie|session(?:[ _-]?id)?)[\w-]{0,40}|\b(?:pass|auth|sid|pw|otp)\b)`;
 // The separator can be escaped or url-encoded: password=, "password": , \"password\":, password%3D.
 const KEY_END = String.raw`\\?["']?\s*`;
 const BASE64 = "A-Za-z0-9+/_-";
@@ -24,36 +26,90 @@ const BASE64 = "A-Za-z0-9+/_-";
 const SCHEME_VALUE = String.raw`(?:(?=[\w.~+/=-]*[\d+/=])[\w.~+/=-]{8,}|[\w.~+/=-]{20,})`;
 const SECRET_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted private key]"],
-  [/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{4,}/g, "[redacted jwt]"],
+  [/\beyJ[\w-]{8,}\.[\w-]{8,}(?:\.[\w-]*)?/g, "[redacted jwt]"], // a JWT with no signature is still a JWT
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted access key]"],
-  [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,})/g, "[redacted token]"],
+  [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}|AIza[\w-]{35})/g, "[redacted token]"],
   [new RegExp(String.raw`\b(Bearer|Basic|Digest|OAuth|Token|ApiKey)\s+${SCHEME_VALUE}`, "gi"), "$1 [redacted]"],
   // "key: value" with an unquoted value takes the rest of the line: a passphrase or "ApiKey 123" has spaces in it.
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?::|%3[Aa])\s*)[^\s\\"'][^\r\n"']*`, "gi"), "$1$2[redacted]"],
-  // A quoted value of any length keeps its quotes; "key=value" runs up to the next space.
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*\\?["'])[^"']*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?::|%3[Aa])\s*)[^\s\\"'][^\r\n]*`, "gi"), "$1$2[redacted]"],
+  // A quoted value of any length keeps its quotes (an escaped quote does not end it); "key=value" runs up to the next space.
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*\\")(?:[^\\]|\\(?!"))*`, "gi"), "$1$2[redacted]"], // value inside \"...\" (JSON inside a string)
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*")(?:[^"\\]|\\.)*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*')(?:[^'\\]|\\.)*`, "gi"), "$1$2[redacted]"],
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*)[^\s"'&,;\\]+`, "gi"), "$1$2[redacted]"],
-  [/(\/\/[^/\s:@]+:)\S+@/g, "$1[redacted]@"],
+  [/(\/\/[^/\s:@]*:)\S+@/g, "$1[redacted]@"],
   [/\b[A-Fa-f0-9]{32,}\b/g, "[redacted hex]"],
   [/\b[A-Za-z0-9+_-]{40,}={0,2}(?![A-Za-z0-9+_-])/g, "[redacted long value]"],
   // Base64 with "/" also looks like a path: it counts as a value only when it mixes digits and both letter cases.
   [new RegExp(`(?<![${BASE64}])(?=[${BASE64}]*\\d)(?=[${BASE64}]*[a-z])(?=[${BASE64}]*[A-Z])[${BASE64}]{40,}={0,2}`, "g"), "[redacted long value]"],
 ];
-// Text of any length is accepted (a download, a console line); the part past this is dropped, which keeps every pattern
-// linear in practice. Every caller clips the result to far less.
-const MAX_REDACT_CHARS = 10_000;
+// Text of any length is accepted and kept whole (the evidence file holds every check in full); a test feeds the patterns
+// hostile input to keep them linear.
 export function redactSecrets(text) {
-  const input = String(text).slice(0, MAX_REDACT_CHARS);
-  return SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), input);
+  return SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), String(text));
 }
 
 // redactSecrets over every string inside a value (a check's expected and actual can be text or a small object).
+// Below the depth limit the rest is redacted as one JSON text, so nothing nested deeper is ever left raw.
 export function scrubValue(value, depth = 0) {
   if (typeof value === "string") return redactSecrets(value);
-  if (depth > 6 || value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 6) {
+    try { return redactSecrets(JSON.stringify(value)); } catch { return "[unreadable value]"; }
+  }
   if (Array.isArray(value)) return value.map(item => scrubValue(item, depth + 1));
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubValue(item, depth + 1)]));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [redactSecrets(key), scrubValue(item, depth + 1)]));
 }
+
+// The one place that makes "nothing written holds a credential" true by construction: every record that leaves the
+// run (receipt, evidence lines, look output) passes through here, whatever field a new sink puts text in. Fields in
+// `keep` are the run's own bookkeeping (a path, a timestamp, a picture): they are not page or spec text.
+export function scrubRecord(record, keep = []) {
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, keep.includes(key) ? item : scrubValue(item)]));
+}
+
+// An address can carry a code or token in its query, fragment or even its path (a reset link): the record keeps the
+// origin and the path, with a long mixed letter-and-digit segment hidden, and never the query or fragment.
+export function hideQuery(url) {
+  try {
+    const parsed = new URL(url);
+    // about:blank has no origin; data: and blob: addresses can hold the content itself, so only the scheme is kept.
+    if (parsed.protocol === "about:") return clipValue(String(url).split(/[?#]/)[0], 100);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return `${parsed.protocol}[hidden]`;
+    return redactSecrets(`${parsed.origin}${hideTokenSegments(parsed.pathname)}${parsed.search ? "?[query hidden]" : ""}${parsed.hash ? "#[hash hidden]" : ""}`);
+  } catch {
+    return "[unparseable address]"; // the raw text could hold a query
+  }
+}
+
+// A path segment that looks like a token: 16 or more characters mixing letters and digits, or 24 or more letters and
+// digits in one run. File and page names ("forms.html", "authentication-settings") stay readable.
+export function hideTokenSegments(pathname) {
+  return redactSecrets(pathname.split("/").map(segment => {
+    const mixed = segment.length >= 16 && /\d/.test(segment) && /[A-Za-z]/.test(segment);
+    return mixed || /^[A-Za-z0-9]{24,}$/.test(segment) ? "[hidden]" : segment;
+  }).join("/"));
+}
+
+// A value that must never be written, shown as its length and a keyed fingerprint: two runs of one process can see
+// that two values are equal, nobody can recover or guess the value from it (the key is random per process).
+const FINGERPRINT_KEY = randomBytes(32);
+export function maskValue(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+  return `${text.length} characters, hmac ${createHmac("sha256", FINGERPRINT_KEY).update(text).digest("hex").slice(0, 8)}`;
+}
+
+// Words in a step that say its value is a credential (a storage key, an attribute, a field label, a selector): the
+// values it reads or compares are masked whole, because the name that makes them secret is not inside the value.
+const SENSITIVE_NAME = /password|passwd|passphrase|passcode|\bpwd\b|\bpw\b|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|credential|cookie|session|\botp\b|\bpin\b/i;
+// The names of the data read (key, attribute, property, path) always count; the names of the control count when the step
+// reads the control's value (assertValue), not when it only finds a button called "Show password".
+export const isSensitiveStep = step => {
+  const named = field => typeof step?.[field] === "string" && SENSITIVE_NAME.test(step[field]);
+  return ["key", "attribute", "property", "path"].some(named)
+    || (step?.op === "assertValue" && ["label", "placeholder", "testId", "selector", "name"].some(named));
+};
 
 // Long strings and large structures are cut in the receipt; the full value stays in the evidence file.
 export function clipValue(value, limit = CLIP_CHARS) {

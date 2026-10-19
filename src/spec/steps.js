@@ -1,8 +1,8 @@
 // One function per op. Actions throw when the page does not allow them (the runner records that as a failed check).
 // Assertions never throw: they poll, then record a check with the last value read.
-import { createHmac, randomBytes } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { hideQuery, maskValue, redactSecrets } from "./evidence.js";
 import { hasTarget, locate } from "./locate.js";
 import { poll } from "./poll.js";
 import { defined, pick, readPath } from "./util.js";
@@ -10,14 +10,10 @@ import { defined, pick, readPath } from "./util.js";
 // Reads inside a poll are short so the poll, not Playwright, decides how long to keep trying.
 const READ_TIMEOUT_MS = 250;
 
-// Cookie fingerprints are keyed with a random key that lives only in this process and is never written down: within
-// one run equal values match and different values differ, but nobody holding a receipt can guess a short value offline.
-const FINGERPRINT_KEY = randomBytes(32);
-
 // A claim no assertion can settle (copy tone, layout feel). It is neither a pass nor a fail: it is listed for a human.
 // The page is not touched, and the step needs no target.
 function review(ctx, step) {
-  ctx.reviews.push({ step: ctx.index, name: step.check, ...(step.note === undefined ? {} : { note: step.note }) });
+  ctx.reviews.push({ step: ctx.index, name: redactSecrets(step.check), ...(step.note === undefined ? {} : { note: redactSecrets(step.note) }) });
 }
 
 const budget = (ctx, step) => step.timeout ?? ctx.timeoutMs;
@@ -62,11 +58,12 @@ async function assertion(ctx, step, expected, evaluate) {
 }
 
 // A text assertion reads one string off the page; the string reader is the only part that differs.
-async function textAssertion(ctx, step, read) {
+// show(actual) is what the check records; the match always uses the value as read.
+async function textAssertion(ctx, step, read, show = value => value) {
   const match = matcher(step);
   await assertion(ctx, step, match.label, async () => {
     const actual = await read();
-    return { pass: actual !== null && match.test(actual), actual };
+    return { pass: actual !== null && match.test(actual), actual: actual === null ? null : show(actual) };
   });
 }
 
@@ -244,7 +241,8 @@ export const STEPS = {
       return { pass, actual };
     });
   },
-  async assertUrl(ctx, step) { await textAssertion(ctx, step, async () => ctx.page.url()); },
+  // The match sees the whole address; the record shows origin and path only (a code or token may be in the query).
+  async assertUrl(ctx, step) { await textAssertion(ctx, step, async () => ctx.page.url(), hideQuery); },
   async assertTitle(ctx, step) { await textAssertion(ctx, step, () => ctx.page.title()); },
   async assertStorage(ctx, step) {
     const area = `${step.area ?? "local"}Storage`;
@@ -266,7 +264,7 @@ export const STEPS = {
     // A cookie value is often a session token, and whether it is httpOnly is known only after reading it: the receipt
     // never carries the expected value, only how it is compared and its length.
     // A short fingerprint stands in for the value: two different values show two different fingerprints on a mismatch.
-    const print = value => `${String(value).length} characters, hmac ${createHmac("sha256", FINGERPRINT_KEY).update(String(value)).digest("hex").slice(0, 8)}`;
+    const print = maskValue;
     const expected = match === null
       ? { exists: step.exists }
       : `${match.kind} (${match.kind === "equals" ? print(match.value) : `${String(match.value).length} characters`})`;
@@ -343,7 +341,12 @@ export const STEPS = {
     // The run moves first: a close that finishes late (or a step given up on) cannot leave it on a tab that is gone.
     const next = open.filter(page => page !== closing).at(-1);
     ctx.page = next;
-    await closing.close();
+    try {
+      await closing.close();
+    } catch (error) {
+      ctx.page = closing; // the tab is still open: the run stays where it was, and the step fails
+      throw error;
+    }
     await next.bringToFront();
   },
 };

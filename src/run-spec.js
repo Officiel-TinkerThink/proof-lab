@@ -8,8 +8,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, redactSecrets, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
-import { absentWaitMs, hideQuery, withExpectations } from "./spec/expect.js";
+import { clipValue, evidenceText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactSecrets, scrubRecord, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
@@ -30,6 +30,9 @@ const MAX_PAGE_ERRORS_KEPT = 100;
 const MAX_FAILURE_CONTEXTS = 5;
 const MAX_REVISION_RECHECKS = 50;
 const ARIA_CHARS = 8000;
+// Fields that are the run's own bookkeeping, not page or spec text; the scrub at the end of runSpec leaves them alone.
+const RECEIPT_BOOKKEEPING = ["spec", "at", "verdict"];
+const EVIDENCE_BOOKKEEPING = ["type", "spec", "at", "mime", "base64"];
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
 export const stepLimits = { graceMs: 20000 }; // an object so a test can shorten it
@@ -49,8 +52,12 @@ export function createContext({ page, adopt = page => page, appUrl, specDir, tim
     record(step, pass, rawExpected, rawActual, rawError) {
       // What the page or the spec shows can hold a credential (an address, a field value, an error that quotes one):
       // every value is scrubbed here, once, before it can reach the receipt or the evidence file.
-      const expected = scrubValue(rawExpected);
-      const actual = scrubValue(rawActual);
+      // A step that names a credential (a storage key "authToken", a field labelled "Password") never records the value it
+      // read or compared: only its length and a keyed fingerprint, as for cookies. The secret-making name is not inside the value.
+      const hide = value => (isSensitiveStep(step) && typeof value !== "boolean" && typeof value !== "number" && value !== null && value !== undefined
+        ? `(masked, ${maskValue(value)})` : value);
+      const expected = scrubValue(hide(rawExpected));
+      const actual = scrubValue(hide(rawActual));
       const error = rawError === undefined ? undefined : scrubValue(rawError);
       // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
       if (!pass && step.optional) {
@@ -115,8 +122,8 @@ async function captureContext(page, step, withPicture) {
   const context = { type: "context", step, url: null, title: null, aria: null };
   const records = [context];
   try {
-    context.url = hideQuery(page.url());
-    context.title = redactSecrets(await bounded(page.title(), 2000, "reading the title"));
+    context.url = clipValue(hideQuery(page.url()), 300);
+    context.title = clipValue(redactSecrets(await bounded(page.title(), 2000, "reading the title")), 300);
   } catch { /* the page may be gone or frozen */ }
   try {
     context.aria = clipValue(redactSecrets(await page.locator("body").ariaSnapshot({ timeout: 2000 })), ARIA_CHARS);
@@ -139,7 +146,7 @@ async function revisionDrift(seen) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(3000), redirect: "manual" });
       const now = response.headers.get(REVISION_HEADER);
-      if (now !== null && now !== revision) return `${redactSecrets(new URL(url).pathname)} was ${revision} when loaded and is ${now} now`;
+      if (now !== null && now !== revision) return `${hideTokenSegments(new URL(url).pathname)} was ${revision} when loaded and is ${now} now`;
     } catch { /* an app that cannot be asked again cannot be compared; the run itself stands */ }
   }
   return null;
@@ -227,7 +234,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
             if (!revision) return;
             const url = response.url();
             if (seenRevisions.has(url) && seenRevisions.get(url) !== revision) {
-              changedWhileRunning ??= `${redactSecrets(new URL(url).pathname)} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
+              changedWhileRunning ??= `${hideTokenSegments(new URL(url).pathname)} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
             }
             seenRevisions.set(url, revision);
           } catch { /* a response of a page that is already closing */ }
@@ -300,6 +307,11 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     receipt.next = [receipt.error ?? "Unknown error.", "Can't tell is not the same as broken: run it again once the app is stable."];
   }
 
+  // Choke point: the receipt and every evidence record are scrubbed here, once, whichever code path produced the text
+  // (a step error, a hint, a review note, a context, a page-supplied revision). Redaction at the sources stays as a second layer.
+  if (receipt.app !== undefined) receipt.app = hideQuery(receipt.app);
+  for (const key of Object.keys(receipt)) if (!RECEIPT_BOOKKEEPING.includes(key)) receipt[key] = scrubValue(receipt[key]);
+
   const records = [
     { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
     ...stepRecords,
@@ -312,6 +324,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     ...(pageErrorsDropped > 0 ? [{ type: "pageerror-truncated", dropped: pageErrorsDropped }] : []),
     { type: "summary", verdict: receipt.verdict, totals, error: receipt.error },
   ];
+  records.forEach((record, index) => { records[index] = scrubRecord(record, EVIDENCE_BOOKKEEPING); });
   const detail = { checks, steps: stepRecords, contexts: contextRecords, console: consoleRecords, pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
   // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
@@ -368,7 +381,7 @@ if (isMainModule(import.meta.url)) {
     process.exitCode = await main(process.argv.slice(2));
   } catch (error) {
     // Exit 2, never 1: 1 means "a check failed", and an unexpected exception is not that.
-    console.error(`ERROR: ${firstLine(error)}`);
+    console.error(`ERROR: ${redactSecrets(firstLine(error))}`);
     process.exitCode = 2;
   }
 }
