@@ -78,7 +78,9 @@ Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a drive
   table swap that sets the cut (`dmsetup resume`) coincides with the dirty page cache being written to the device, so the
   unflushed receipts reach the disk before the cut takes effect. Dropped writes were confirmed for fsynced data (0 of 50
   survived). A discriminating test needs a flush-aware record-and-replay device (dm-log-writes), not a table swap. The WSL
-  changes were reverted. Run a discriminating host-level test before any validation use.
+  changes were reverted. Status: blocked on this machine. The WSL2 kernel has no `CONFIG_DM_LOG_WRITES`, so the test needs
+  a Linux host with dm-log-writes (or another block-level fault injector). Until it runs there, host power loss is an
+  accepted residual risk for the QMS owner to accept or assign. Run a discriminating host-level test before any validation use.
 - **Windows read-only attribute.** Only the write bit maps to the read-only attribute on Windows, so 0444 does not stop the
   file's owner. The code clears the flag before it removes a file it wrote (`discard`), and does not rely on the Node
   unlink branch for that. The Windows path is not exercised by the Linux container tests.
