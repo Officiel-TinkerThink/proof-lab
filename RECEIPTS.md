@@ -91,8 +91,14 @@ Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a drive
 
 ## Open items for the QMS owner
 
-- Anchor store owner and location (see Chain). Proposed, pending QMS owner acceptance: an append-only anchor, one line per
-  run (sequence, head hash, time), written by the CI runner under a credential the operator cannot use, in a store QA owns.
-  Placing it is an infrastructure choice the owner makes.
-- Calendar rotation interval. Proposed, pending QMS owner acceptance: 12 months. NIST SP 800-57 Part 1 Rev. 5, Table 1 (p. 45),
+- Anchor store (see Chain). Decided 2026-10-19: owner is the validation team; store is an append-only anchor, one line per
+  run (sequence, head hash, time), written by the CI runner under a credential the operator cannot use. Not built yet: until
+  it is, the head is not anchored and `--expect-head` is only as strong as the value the operator supplies. The validation
+  team may override the owner or store choice.
+- Host power loss (see above). Decided 2026-10-19: validation use is blocked until a discriminating host-level test passes
+  on a Linux host with dm-log-writes. Accepted residual risk until then: none; the driver is not for validation use.
+- Unresolved IDs S5, S10, S19 and "line 636" (from an earlier list). Decided 2026-10-19: not proof-lab items. A search of the
+  projects tree found S5 and S10 only as slice IDs of ginka_reporting ticket 12 (S5 marked complete, S10 pending in that
+  ticket's own file). S19 appears nowhere. "line 636" matches only an unrelated link. Owner of those items: ginka_reporting.
+- Calendar rotation interval. Decided 2026-10-19: 12 months. NIST SP 800-57 Part 1 Rev. 5, Table 1 (p. 45),
   row 3 "Symmetric Authentication Key": originator-usage period < 2 years; recipient-usage period < OUP + 3 years.
