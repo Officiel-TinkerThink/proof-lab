@@ -41,12 +41,40 @@ Exit codes: run 0 PASS, 1 FAIL, 2 ERROR (cannot tell). Verify 0 intact, 1 tamper
 - Known limits: a pid can be reused after a crash, so a stale lock can look live until the pid is reused. Two reclaimers
   racing on the same stale lock can, in a narrow window, remove a fresh lock.
 
+## Power-cut test (guest level)
+
+Scripts: `test/power/`. The test boots a Debian bookworm guest under KVM, writes receipts through `src/chain.js` inside the
+guest, and prints `ACK <index>` only after `writeReceipt` resolves (file and directory flushed). The host kills the VM at a
+random point mid-write (a power cut: no guest shutdown). A second boot runs `verifyChain` on the same disk. The invariant:
+every ACKed receipt is present after the cut (verified head >= last ACK) and the chain has no problems.
+
+- Needs: Linux host with `/dev/kvm`, QEMU, `debootstrap`, `e2fsprogs`, Node 24 on the path, root in the container.
+- `build-image.sh` builds the guest (rootfs, kernel, Node, `chain.js`) into an ext4 image. `SRC` and `W` select the source
+  and the output directory.
+- `host-run.sh` runs the cycles. `RUNS` sets the count; `W` selects the image directory; `CACHE` sets the QEMU cache mode
+  (default `none`, which bypasses the host page cache).
+- The guest init waits 30 s after requesting power-off, and each QEMU boot has a 240 s timeout (a guest that panics on
+  exit must not hang the driver).
+- Control: the same driver against a copy of `chain.js` with both flush calls removed. It must fail; it proves the test
+  detects a missing flush.
+
+Result (2026-10-19, five cycles each, final driver):
+
+| Image | Cycles | Result |
+|---|---|---|
+| Baseline (fsync file and directory) | 5 | 5 PASS: every cut verified; verified head >= last ACK; 0 problems |
+| Control (no flush) | 5 | 5 NOT-DURABLE: after the cut `/work/receipts` was missing, so acknowledged receipts were lost |
+
+Limits: QEMU is killed, so the host's page cache survives. This shows the guest flush path, not host power loss.
+Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a driver race on CRLF output) and are not reported.
+
 ## Limits not covered by tests
 
 - **Windows directory flush.** Node cannot open a directory to flush it on Windows, so a rename is not flushed there. The
   file itself is flushed before the rename. This is recorded as a residual risk.
-- **Power loss.** Not tested. Process-level crash states (a leftover temp file, a stale lock) are tested. A power-cut test needs
-  a VM; run it before any validation use.
+- **Power loss at the host.** Not tested. The guest-level power-cut test below covers the guest's flush path. Cutting power to
+  the host (the disk cache of the host itself) needs block-device fault injection on a host, which was not available.
+  Run a host-level test before any validation use.
 - **Windows read-only attribute.** Only the write bit maps to the read-only attribute on Windows, so 0444 does not stop the
   file's owner. The code clears the flag before it removes a file it wrote (`discard`), and does not rely on the Node
   unlink branch for that. The Windows path is not exercised by the Linux container tests.
