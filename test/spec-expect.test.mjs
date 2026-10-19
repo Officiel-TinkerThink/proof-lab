@@ -622,9 +622,47 @@ test("cycle 9b: camelCase names, a password with a question mark, a value on the
   assert.match(redactSecrets("password=&quot;hunter22&quot; x"), / x$/);
 });
 
-test("cycle 10: a list item below a key is not a value, at any indent", () => {
-  assert.equal(redactSecrets("tokens:\n  - abc\n  - def"), "tokens:\n  - abc\n  - def");
+test("cycle 10: a list under a credential key is a value, a list under an aria node is not", () => {
+  assert.equal(redactSecrets("tokens:\n  - abc\n  - def\nnext: 1"), "tokens:\n  [redacted]\nnext: 1");
+  assert.equal(redactSecrets("tokens:\n    - abc"), "tokens:\n    [redacted]");
+  const again = redactSecrets("tokens:\n  - abc\n  - def");
+  assert.equal(redactSecrets(again), again);
   assert.equal(redactSecrets('- region Cookies:\n    - button "Accept all"'), '- region Cookies:\n    - button "Accept all"');
+  assert.equal(redactSecrets('  - region Cookies:\n      - button "Accept all"\n      - link "More"'), '  - region Cookies:\n      - button "Accept all"\n      - link "More"');
+});
+
+test("cycle 11: a value after a blank is hidden even when its key is glued to a ? or #, a quote in a query does not end it", () => {
+  assert.doesNotMatch(redactSecrets("went to http://h/#password: hunter22 ok"), /hunter22/);
+  assert.doesNotMatch(redactSecrets("http://h/p?password: my secret"), /my secret|\bsecret\b/);
+  assert.doesNotMatch(redactSecrets("see http://h/p?token='abc99xyz' end"), /abc99xyz/);
+  assert.match(redactSecrets("see http://h/p?token='abc99xyz' end"), / end$/);
+  assert.doesNotMatch(redactSecrets("err http:\\\\/\\\\/h/p?code=zz88"), /zz88/);
+  const once = redactSecrets("a http://h/p?x=1#f b");
+  assert.equal(redactSecrets(once), once);
+});
+
+test("cycle 11: an HTML-escaped value ends at its own quote kind, an unquoted value with a quote inside runs to the blank", () => {
+  assert.doesNotMatch(redactSecrets("password=&quot;it&#39;s hunter&quot; ok"), /hunter|it&#39;s/);
+  assert.match(redactSecrets("password=&quot;it&#39;s hunter&quot; ok"), /&quot; ok$/);
+  assert.equal(redactSecrets('password=ab"cd ef'), 'password=[redacted] ef');
+});
+
+test("cycle 11: status prints no credential from an invalid spec's problem text", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { statusOf, formatStatus } = await import("../src/status.js");
+  const { KEY } = await import("./spec-helpers.mjs");
+  const dir = await mkdtemp(join(tmpdir(), "proof-status-"));
+  try {
+    const specPath = join(dir, "s.json");
+    await writeFile(specPath, JSON.stringify(page("/fixtures/forms.html", [{ op: "fill password=hunter22", check: "x" }])));
+    const result = await statusOf({ dir: join(dir, "none"), key: KEY, specPath });
+    assert.equal(result.state, "CANNOT-TELL");
+    assert.doesNotMatch(formatStatus(result) + JSON.stringify(result), /hunter22/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("cycle 10: HTML-escaped keys and values, single or double, across a line break", () => {
@@ -674,7 +712,12 @@ test("cycle 10: a text that fits is kept whole, and a second cut adds to the fir
   const { redactClip, summarizePageErrors } = await import("../src/spec/evidence.js");
   assert.doesNotMatch(redactClip("pw=ab ".repeat(160), 1000), /more characters/);
   const long = redactClip("y".repeat(3000), 1000);
-  assert.match(summarizePageErrors([long])[0], /\[2800 more characters\]$/);
+  assert.match(summarizePageErrors([long], new Map([[long, 3000]]))[0], /\[2800 more characters\]$/);
+  const grown = redactClip("pw=ab ".repeat(150), 1000);
+  assert.match(summarizePageErrors([grown], new Map([[grown, 900]]))[0], /\[700 more characters\]$/);
+  const small = redactClip("pw=ab ".repeat(30), 1000);
+  assert.equal(summarizePageErrors([small], new Map([[small, 180]]))[0], small, "an original that fits stays whole");
+  assert.equal(summarizePageErrors(["short"])[0], "short");
 });
 
 test("cycle 10: status of an invalid spec names the spec scrubbed", TIMEOUT, async () => {

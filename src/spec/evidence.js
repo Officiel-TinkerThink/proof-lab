@@ -29,7 +29,7 @@ const KEY_END = String.raw`(?:\\?["']|${ENTITY_QUOTE})?${SP}`;
 const BASE64 = "A-Za-z0-9+/_-";
 // "Basic validation" is prose; "Basic dXNlcjpwYXNz" is not: a scheme value needs a digit, + / = or at least 20 characters.
 const SCHEME_VALUE = String.raw`(?:(?=[\w.~+/=-]*[\d+/=])[\w.~+/=-]{8,}|[\w.~+/=-]{20,})`;
-const URL_START = /\bhttps?:(?:\\?\/){2}/i;
+const URL_START = /\bhttps?:(?:\\{0,4}\/){2}/i;
 // A token that holds an http(s) address: its first "?" and its first "#" (after the host start) hide everything behind them.
 function hideUrlParts(token) {
   const found = URL_START.exec(token);
@@ -50,12 +50,7 @@ const SECRET_PATTERNS = [
   [/(?<![A-Za-z0-9_])eyJ[\w-]{8,997}\.[\w-]+(?:\.[\w-]*)?/g, "[redacted jwt]"],
   // A password in a URL's userinfo goes first: it may itself contain a "?" or "#" that the address rules below would cut at.
   // Bounded, so many "//x:" starts in one long run cost a bounded scan each. Not "host:4173/@name": a port is not a password.
-  [/((?:\\?\/){2}[^/\s:@]*:)(?!\d+(?:[/?#\s]|$))\S{1,2000}@/g, "$1[redacted]@"],
-  // A query or fragment in an address inside free text (an error that quotes the URL it failed on) is hidden like a
-  // recorded address; a query after a "#/route" counts too. The part before it is bounded for the same reason.
-  // Token by token (a token ends at a blank, a quote or a bracket), so an address of any length costs one pass; a marker
-  // that is already there is part of the token, which keeps the rule idempotent and still hides what follows the marker.
-  [/(?:\[query hidden\]|\[hash hidden\]|[^\s"'<>])+/g, hideUrlParts],
+  [/((?:\\{0,4}\/){2}[^/\s:@]*:)(?!\d+(?:[/?#\s]|$))\S{1,2000}@/g, "$1[redacted]@"],
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted access key]"],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}|AIza[\w-]{35})/g, "[redacted token]"],
   [new RegExp(String.raw`\b(Bearer|Basic|Digest|OAuth|Token|ApiKey)\s+${SCHEME_VALUE}`, "gi"), "$1 [redacted]"],
@@ -64,13 +59,23 @@ const SECRET_PATTERNS = [
   // A key at the end of a line with its value indented on the next line (YAML style). A quoted key ("Cookies":) and a list
   // item below it ("- button ...", an aria tree) are not a value.
   [new RegExp(String.raw`(${KEY})(:${SP}\r?\n(?![^\S\r\n]*- )[^\S\r\n]+)[^\r\n]+`, "gi"), "$1$2[redacted]"],
+  // A list under a credential key (YAML) is a value too, unless the key's own line is a list item (an aria node). The line
+  // check runs only where a key is followed by a line break: one scan back per line.
+  [new RegExp(String.raw`(${KEY})(?=:${SP}\r?\n)(?<!(?:^|[\r\n])[^\S\r\n]*- [^\r\n]*)(:${SP}\r?\n[^\S\r\n]+)- [^\r\n]*(?:\r?\n[^\S\r\n]+- [^\r\n]*)*`, "gi"), "$1$2[redacted]"],
   // The same key and value HTML-escaped: password=&quot;x&quot; or &#34;x&#34;.
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}${ENTITY_QUOTE})(?:(?!${ENTITY_QUOTE})[\s\S])*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}(${ENTITY_QUOTE}))(?:(?!\3)[\s\S])*`, "gi"), "$1$2[redacted]"],
   // A quoted value of any length keeps its quotes (an escaped quote does not end it); "key=value" with an unquoted value ends at the next blank, "&", "," or ";" (a passphrase with spaces needs quotes).
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}\\")(?:[^\\]|\\(?!"))*`, "gi"), "$1$2[redacted]"], // value inside \"...\" (JSON inside a string)
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}")(?:[^"\\]|\\.)*`, "gi"), "$1$2[redacted]"],
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}')(?:[^'\\]|\\.)*`, "gi"), "$1$2[redacted]"],
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP})[^\s"'&,;\\]+`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP})[^\s"'&,;\\][^\s&,;]*`, "gi"), "$1$2[redacted]"],
+  // A query or fragment in an address inside free text (an error that quotes the URL it failed on) is hidden like a
+  // recorded address; a query after a "#/route" counts too. It runs after the key rules, so a key glued to a "?" or "#"
+  // ("#password: x y") has already hidden its value when the address is cut. Token by token: a token is the text up to a
+  // blank, a quote or a bracket, and from its first "?" or "#" to the next blank (a quote there is part of the query), so
+  // an address of any length costs one pass; a marker already there is part of the token, which keeps the rule idempotent
+  // and still hides what follows the marker.
+  [/(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
   [/(?<![A-Fa-f0-9])[A-Fa-f0-9]{32,}(?![A-Fa-f0-9])/g, "[redacted hex]"],
   // A run of 40 or more token characters that contains a digit. Long hyphenated words and names ("closed-shadow-root-...")
   // have none and are kept. Starting only where a run begins keeps the scan linear.
@@ -248,19 +253,15 @@ export function summarize(checks) {
   };
 }
 
-// A page error already cut at 1000 characters carries a note ("... [N more characters]"); cutting it again must add to that
-// count, not start a second one from the middle.
-const CUT_NOTE = /\.\.\. \[(\d+) more characters\]$/;
-function clipCounted(text, limit) {
-  const note = CUT_NOTE.exec(text);
-  if (note === null) return clipText(text, limit);
-  const body = text.slice(0, note.index);
-  const kept = Math.min(limit, body.length);
-  return `${body.slice(0, kept)}... [${body.length - kept + Number(note[1])} more characters]`;
-}
-
-export function summarizePageErrors(pageErrors) {
-  return pageErrors.slice(0, MAX_PAGE_ERRORS).map(message => clipCounted(message, CLIP_CHARS));
+// A page error is cut twice (1000 in the evidence file, 200 in the receipt). The note always counts from the original text:
+// the caller passes the original length of each message (keyed by the recorded message), never a count read back from text.
+export function summarizePageErrors(pageErrors, originalLengths = new Map()) {
+  return pageErrors.slice(0, MAX_PAGE_ERRORS).map(message => {
+    const original = originalLengths.get(message) ?? message.length;
+    // A text whose original fits is kept whole, as in redactClip, even when placeholders made it longer.
+    if (message.length <= CLIP_CHARS || original <= CLIP_CHARS) return message;
+    return `${message.slice(0, CLIP_CHARS)}... [${original - CLIP_CHARS} more characters]`;
+  });
 }
 
 // JSON Lines: one record per line, each with a "type", so an agent can grep or read it a section at a time.

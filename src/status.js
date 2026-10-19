@@ -61,10 +61,10 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
     text = await readFile(specPath, "utf8");
     spec = JSON.parse(text);
   } catch (error) {
-    return answer("CANNOT-TELL", { spec: null, advice: [`The spec could not be read: ${firstLine(error)}. Fix the path or the file.`] });
+    return answer("CANNOT-TELL", { spec: null, advice: [`The spec could not be read: ${redactSecrets(firstLine(error))}. Fix the path or the file.`] });
   }
   const problems = validateSpec(spec);
-  if (problems.length > 0) return answer("CANNOT-TELL", { spec: typeof spec?.name === "string" ? redactSecrets(spec.name) : null, advice: [`The spec is invalid: ${problems.join("; ")}. Fix the spec first.`] });
+  if (problems.length > 0) return answer("CANNOT-TELL", { spec: typeof spec?.name === "string" ? redactSecrets(spec.name) : null, advice: [`The spec is invalid: ${redactSecrets(problems.join("; "))}. Fix the spec first.`] });
   const specHash = createHash("sha256").update(text).digest("hex").slice(0, 12);
   const base = { spec: redactSecrets(spec.name), specHash };
 
@@ -75,7 +75,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
     if (error.code === "ENOENT" || /^no receipts in /.test(error.message)) {
       return answer("NO-RECEIPT", { ...base, advice: [`No receipt exists in ${dir}. Run the spec, then ask again.`] });
     }
-    return answer("CANNOT-TELL", { ...base, advice: [`The receipts could not be checked: ${firstLine(error)}. Fix the setup.`] });
+    return answer("CANNOT-TELL", { ...base, advice: [`The receipts could not be checked: ${redactSecrets(firstLine(error))}. Fix the setup.`] });
   }
   if (verified.problems.length > 0) {
     return answer("CANNOT-TELL", { ...base, problems: verified.problems, advice: ["The receipt chain does not verify, so no receipt can be trusted. Do not say done; hand a human the problems."] });
@@ -98,7 +98,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   };
 
   if (latest.verdict === "ERROR") {
-    return answer("ERROR", { ...common, advice: ["The last run could not tell. Fix the setup (see the error in the receipt), do not guess, then run again.", ...(latest.error ? [`Error: ${latest.error}`] : [])] });
+    return answer("ERROR", { ...common, advice: ["The last run could not tell. Fix the setup (see the error in the receipt), do not guess, then run again.", ...(latest.error ? [`Error: ${redactSecrets(latest.error)}`] : [])] });
   }
   if (latest.verdict === "FAIL") {
     const repeated = repeatedFailures(mine, maxAttempts);
@@ -189,7 +189,7 @@ if (isMainModule(import.meta.url)) {
     const root = fileURLToPath(new URL("..", import.meta.url));
     process.exitCode = await main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") });
   } catch (error) {
-    console.error(`ERROR: ${firstLine(error)}`);
+    console.error(`ERROR: ${redactSecrets(firstLine(error))}`);
     process.exitCode = 2;
   }
 }

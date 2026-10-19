@@ -190,8 +190,10 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pageErrors = new Set();
   let pageErrorsDropped = 0;
+  const pageErrorLengths = new Map();
   const noteError = raw => {
     const message = redactClip(raw, 1000);
+    if (!pageErrorLengths.has(message)) pageErrorLengths.set(message, String(raw).length);
     if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(message);
     else if (!pageErrors.has(message)) pageErrorsDropped += 1;
   };
@@ -282,7 +284,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     // Last, so an error thrown late in the run (during the guard or the final screenshot) is still seen by this check.
     if (spec.noPageErrors === true) {
       checks.push({
-        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: summarizePageErrors([...pageErrors]),
+        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: summarizePageErrors([...pageErrors], pageErrorLengths),
         ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read the console records in the evidence file." } : {}),
       });
     }
@@ -299,7 +301,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   receipt.totals = totals;
   receipt.checks = failures;
   receipt.review = summarizeReviews(reviews);
-  receipt.pageErrors = summarizePageErrors([...pageErrors]);
+  receipt.pageErrors = summarizePageErrors([...pageErrors], pageErrorLengths);
   if (receipt.verdict === "PASS") {
     receipt.next = reviews.length > 0
       ? [`Every check passed, but ${reviews.length} claim(s) need a human: ${reviews.slice(0, 5).map(item => item.name).join("; ")}. Do not say done; hand a human the receipt.`]
