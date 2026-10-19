@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  EVIDENCE_SUFFIX, canonicalBody, fileBody, fileStamp, fixedStamp, keyIdOf, latestHash, receiptFiles, sha256Hex, signBody,
-  verifyChain, writeReceipt,
+  EVIDENCE_SUFFIX, LOCK_NAME, MAX_EVIDENCE_BYTES, canonicalBody, fileBody, fileStamp, fixedStamp, isEvidenceName, keyIdOf,
+  latestHash, receiptFiles, sha256Hex, signBody, verifyChain, withChainLock, writeReceipt,
 } from "../src/chain.js";
 
 const KEY = Buffer.alloc(40, 9);
@@ -98,6 +98,146 @@ test("a forged evidence reference cannot make verify read anywhere else", async 
       assert.match(result.problems[0], /evidence reference is malformed/, JSON.stringify(evidence));
     });
   }
+});
+
+test("only a plain, non-device evidence name is accepted, by the verifier and by isEvidenceName", async () => {
+  const good = [`${fileStamp(stamp(1))}-${REVISION}${EVIDENCE_SUFFIX}`, "x.evidence.jsonl", "con-x.evidence.jsonl", "A1-b2.evidence.jsonl"];
+  for (const name of good) assert.equal(isEvidenceName(name), true, name);
+  const bad = [
+    "con.evidence.jsonl", "CON.evidence.jsonl", "nul.evidence.jsonl", "Aux.evidence.jsonl", "com1.evidence.jsonl", "LPT9.evidence.jsonl",
+    "a:b.evidence.jsonl", "r.json:x.evidence.jsonl", "x.y.evidence.jsonl", ".evidence.jsonl", "-x.evidence.jsonl", "a b.evidence.jsonl",
+    "a\u0000b.evidence.jsonl", "x.evidence.jsonl ", "x.evidence.jsonl.", "../x.evidence.jsonl", "x/y.evidence.jsonl", "x\\y.evidence.jsonl",
+    "x.evidence.json", "x.EVIDENCE.JSONL", "", null, 5,
+  ];
+  for (const name of bad) assert.equal(isEvidenceName(name), false, JSON.stringify(name));
+  for (const name of ["con.evidence.jsonl", "a:b.evidence.jsonl", "x.y.evidence.jsonl"]) {
+    await inTempDir(async dir => {
+      await writeSigned(dir, baseReceipt(stamp(3), { evidence: { file: name, sha256: "x" } }));
+      const result = await verifyChain(dir, KEY);
+      assert.match(result.problems[0] ?? "", /evidence reference is malformed/, name);
+    });
+  }
+});
+
+test("an evidence path that is a directory, a link or too large is a problem, never a read", async t => {
+  await inTempDir(async dir => {
+    const paths = await writeReceipt(baseReceipt(stamp(1)), { evidence: "original\n", key: KEY, dir });
+    await chmod(paths.evidencePath, 0o644);
+    await rm(paths.evidencePath);
+    await mkdir(paths.evidencePath);
+    const asDirectory = await verifyChain(dir, KEY);
+    assert.equal(asDirectory.problems.length, 1);
+    assert.match(asDirectory.problems[0], /is not a plain file/);
+  });
+
+  await inTempDir(async dir => {
+    const paths = await writeReceipt(baseReceipt(stamp(2)), { evidence: "original\n", key: KEY, dir });
+    await chmod(paths.evidencePath, 0o644);
+    await rm(paths.evidencePath);
+    // A link to a file with exactly the right content: still refused, so verify is no oracle for files elsewhere.
+    const outside = join(dir, "outside.txt");
+    await writeFile(outside, "original\n");
+    try {
+      await symlink(outside, paths.evidencePath);
+    } catch {
+      t.diagnostic("symbolic links cannot be created here; the link case was skipped");
+      return;
+    }
+    const linked = await verifyChain(dir, KEY);
+    assert.equal(linked.problems.length, 1);
+    assert.match(linked.problems[0], /is not a plain file/);
+  });
+
+  await inTempDir(async dir => {
+    const paths = await writeReceipt(baseReceipt(stamp(3)), { evidence: "original\n", key: KEY, dir });
+    await chmod(paths.evidencePath, 0o644);
+    await truncate(paths.evidencePath, MAX_EVIDENCE_BYTES + 1);
+    const large = await verifyChain(dir, KEY);
+    assert.equal(large.problems.length, 1);
+    assert.match(large.problems[0], /is larger than/);
+  });
+
+  await inTempDir(async dir => {
+    await assert.rejects(
+      writeReceipt(baseReceipt(stamp(4)), { evidence: "x".repeat(MAX_EVIDENCE_BYTES + 1), key: KEY, dir }),
+      /the evidence is larger than/,
+    );
+    assert.deepEqual(await readdir(dir), []);
+  });
+});
+
+test("writeReceipt puts the fields in stored order itself, and refuses fields it does not store", async () => {
+  await inTempDir(async dir => {
+    const shuffled = Object.fromEntries(Object.entries(baseReceipt(stamp(1))).reverse());
+    await writeReceipt(shuffled, { evidence: "E\n", key: KEY, dir });
+    assert.deepEqual((await verifyChain(dir, KEY)).problems, []);
+
+    const noEvidenceKey = baseReceipt(stamp(2));
+    delete noEvidenceKey.evidence;
+    delete noEvidenceKey.screenshot;
+    await writeReceipt(noEvidenceKey, { shot: Buffer.from("png"), evidence: "E2\n", key: KEY, dir });
+    assert.deepEqual(await verifyChain(dir, KEY), { problems: [], checked: 2, missingEvidence: [] });
+  });
+  await inTempDir(async dir => {
+    const extra = { ...baseReceipt(stamp(3)), surprise: 1 };
+    await assert.rejects(writeReceipt(extra, { key: KEY, dir }), /fields the format does not store: surprise/);
+    assert.deepEqual(await readdir(dir), []);
+  });
+});
+
+test("a write that fails after signing rolls back inside the lock and leaves the caller's receipt as it was", async () => {
+  await inTempDir(async dir => {
+    const receipt = baseReceipt(stamp(1));
+    const name = `${fileStamp(receipt.at)}-${REVISION}`;
+    await mkdir(join(dir, `${name}.json`)); // the receipt cannot be renamed onto a directory
+    await assert.rejects(writeReceipt(receipt, { shot: Buffer.from("png"), evidence: "E\n", key: KEY, dir }), error => {
+      assert.match(error.message, /^(?!.*could not remove)/s, "the png and the evidence were removed");
+      return true;
+    });
+    for (const field of ["keyId", "prevHash", "hash", "mac"]) assert.equal(field in receipt, false, field);
+    assert.equal(receipt.screenshot, null);
+    assert.equal(receipt.evidence, null);
+    assert.deepEqual((await readdir(dir)).sort(), [`${name}.json`]);
+    assert.ok(!(await readdir(dir)).includes(".chain.lock"), "the lock is released");
+  });
+  await inTempDir(async dir => {
+    const receipt = baseReceipt(stamp(2));
+    await mkdir(join(dir, `${fileStamp(receipt.at)}-${REVISION}.png`)); // the picture cannot be renamed onto a directory
+    // Nothing was created by this call, so nothing is removed: the directory that is in the way stays, and no leftover is reported.
+    await assert.rejects(writeReceipt(receipt, { shot: Buffer.from("png"), key: KEY, dir }), error => {
+      assert.doesNotMatch(error.message, /could not remove/);
+      return true;
+    });
+    assert.equal(receipt.screenshot, null);
+    assert.deepEqual((await readdir(dir)).sort(), [`${fileStamp(receipt.at)}-${REVISION}.png`]);
+  });
+});
+
+test("writers in one process queue; a lock left by this process is reclaimed at once", async () => {
+  await inTempDir(async dir => {
+    const events = [];
+    const slow = withChainLock(dir, 5000, async () => {
+      events.push("first in");
+      await new Promise(resolve => setTimeout(resolve, 200));
+      events.push("first out");
+    });
+    const second = withChainLock(dir, 5000, async () => { events.push("second in"); });
+    await Promise.all([slow, second]);
+    assert.deepEqual(events, ["first in", "first out", "second in"]);
+  });
+  await inTempDir(async dir => {
+    // The lock file names this very process, but no writer here holds it: its removal must have failed earlier.
+    await writeFile(join(dir, LOCK_NAME), JSON.stringify({ pid: process.pid, host: hostname() }));
+    const started = Date.now();
+    assert.equal(await withChainLock(dir, 5000, async () => "reclaimed"), "reclaimed");
+    assert.ok(Date.now() - started < 2000, "no 30 second wait on our own leftover");
+  });
+  await inTempDir(async dir => {
+    const holder = withChainLock(dir, 5000, () => new Promise(resolve => setTimeout(resolve, 400)));
+    await assert.rejects(withChainLock(dir, 100, async () => "never"), /locked by another writer/);
+    await holder;
+    assert.equal(await withChainLock(dir, 1000, async () => "free again"), "free again");
+  });
 });
 
 test("a refused receipt leaves the files of the earlier run untouched", async () => {

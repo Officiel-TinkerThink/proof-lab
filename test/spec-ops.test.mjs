@@ -391,13 +391,58 @@ test("validateSpec: numbers, lists and patterns", () => {
   assert.match(text, /steps\[8\] \(click\)\.modifiers must each be one of/);
   assert.match(text, /steps\[9\] \(selectOption\)\.byIndex\[1\] must be integer/);
   assert.match(text, /steps\[10\] \(selectOption\)\.byValue must not be an empty list/);
-  assert.match(text, /steps\[11\] \(assertText\)\.flags may only use i, m, s, u, v/);
+  assert.match(text, /steps\[11\] \(assertText\)\.flags may only use d, i, m, s, u, v/);
   assert.match(text, /steps\[12\] \(assertText\)\.flags only applies with matches/);
   assert.match(text, /steps\[13\] \(assertText\)\.flags may only use/);
   assert.match(text, /steps\[14\] \(goto\)\.url must not be empty/);
   assert.match(text, /steps\[15\] \(goto\)\.status must be from 100 to 599/);
   assert.match(text, /steps\[16\] \(click\)\.frame\[1\] must be string/);
   assert.equal(problemsOf([{ op: "assertText", selector: "#a", matches: "x", flags: "i" }]), "");
+});
+
+test("validateSpec: a refinement without a target is an error, not a silent drop", () => {
+  const text = problemsOf([
+    { op: "press", key: "Enter", nth: 2 },
+    { op: "scroll", y: 300, hasText: "Results" },
+    { op: "press", key: "Enter", exact: false },
+    { op: "press", key: "Enter", frame: "#f" },
+  ]);
+  assert.match(text, /steps\[0\] \(press\): nth needs a target/);
+  assert.match(text, /steps\[1\] \(scroll\): hasText needs a target/);
+  assert.match(text, /steps\[2\] \(press\): exact needs a target/);
+  assert.match(text, /steps\[3\] \(press\): frame needs a target/);
+  assert.equal(problemsOf([{ op: "press", key: "Enter", selector: "#a", nth: 1 }, { op: "assertUrl", contains: "/" }]), "");
+});
+
+test("validateSpec: storage assertions, option lists, indexes and step timeouts", () => {
+  const text = problemsOf([
+    { op: "assertStorage", key: "session", path: "user.role", exists: true },
+    { op: "assertValues", selector: "#s", equals: [1, 2] },
+    { op: "selectOption", selector: "#s", byIndex: -1 },
+    { op: "selectOption", selector: "#s", byIndex: [0, -2] },
+    { op: "click", selector: "#a", timeout: 600001 },
+    { op: "assertText", selector: "#a", equals: "x", timeout: 600001 },
+  ]);
+  assert.match(text, /steps\[0\] \(assertStorage\) cannot combine "exists" with "path"/);
+  assert.match(text, /steps\[1\] \(assertValues\)\.equals\[0\] must be string/);
+  assert.match(text, /steps\[2\] \(selectOption\)\.byIndex must be 0 or more/);
+  assert.match(text, /steps\[3\] \(selectOption\)\.byIndex\[1\] must be 0 or more/);
+  assert.match(text, /steps\[4\] \(click\)\.timeout must be at most 600000/);
+  assert.match(text, /steps\[5\] \(assertText\)\.timeout must be at most 600000/);
+  assert.equal(problemsOf([{ op: "assertStorage", key: "k", path: "a.b", equals: 1 }]), "");
+  assert.equal(problemsOf([{ op: "assertValues", selector: "#s", equals: ["a", "b"] }]), "");
+});
+
+test("validateSpec: names are checked as written, in characters; the d flag is allowed", () => {
+  const named = name => validateSpec({ name, steps: [{ op: "assertUrl", contains: "/" }] }).join("\n");
+  const bad = /name must be 1 to 100 characters, with no control characters and no leading or trailing space/;
+  for (const name of ["Checkout\n", "Checkout\t", " Checkout", "Checkout ", "\u007fCheckout", "Check\u0085out", "a\u0000b", "", "x".repeat(101)]) {
+    assert.match(named(name), bad, JSON.stringify(name));
+  }
+  assert.equal(named("x".repeat(100)), "");
+  assert.equal(named("😀".repeat(100)), "", "100 characters, though 200 UTF-16 code units");
+  assert.equal(named("Checkout flow, step 2"), "");
+  assert.equal(problemsOf([{ op: "assertText", selector: "#a", matches: "ok", flags: "d" }]), "");
 });
 
 test("validateSpec: file entries, app settings, names and assertion-less specs", () => {
@@ -421,8 +466,10 @@ test("validateSpec: file entries, app settings, names and assertion-less specs",
 
   assert.match(validateSpec({ name: "", steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /name must be 1 to 100 characters/);
   assert.match(validateSpec({ name: "a\nb", steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /name must be 1 to 100 characters/);
-  assert.match(validateSpec({ name: "x", timeoutMs: 0, steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /timeoutMs must be greater than 0/);
-  assert.match(validateSpec({ name: "x", timeoutMs: 600001, steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /timeoutMs must be greater than 0 and at most 600000/);
+  assert.match(validateSpec({ name: "x", timeoutMs: 0, steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /timeoutMs must be from 1 to 600000/);
+  assert.match(validateSpec({ name: "x", timeoutMs: 0.5, steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /timeoutMs must be from 1 to 600000/);
+  assert.match(validateSpec({ name: "x", timeoutMs: 600001, steps: [{ op: "assertUrl", contains: "/" }] }).join("\n"), /timeoutMs must be from 1 to 600000/);
+  assert.equal(validateSpec({ name: "x", timeoutMs: 1, steps: [{ op: "assertUrl", contains: "/" }] }).length, 0);
 
   assert.match(problemsOf([{ op: "goto", url: "/" }, { op: "click", selector: "#a" }]), /spec has no assertions/);
   assert.equal(problemsOf([{ op: "goto", url: "/", status: 200 }]), "");

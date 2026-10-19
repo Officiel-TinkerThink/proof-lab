@@ -2,7 +2,8 @@
 // Must stay byte-compatible with proof-lab-go/main.go. test/chain.test.mjs pins the shared fixture.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { chmod, link, lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 
 export const KEY_ENV = "PROOF_LAB_KEY";
@@ -13,7 +14,17 @@ export const LOCK_NAME = ".chain.lock";
 export const LOCK_TIMEOUT_MS = 30000;
 // Evidence file suffix. It does not end in .json, so receiptFiles (which lists *.json) never mistakes evidence for a receipt.
 export const EVIDENCE_SUFFIX = ".evidence.jsonl";
+// Evidence is small by construction (a few hundred records at most). A bigger file is refused when written and when verified.
+export const MAX_EVIDENCE_BYTES = 64 * 1024 * 1024;
 const REVISION = /^[0-9a-f]{12}$/;
+// The only shape a receipt may name as its evidence: letters, digits and hyphens, then the suffix. No separators, no
+// colon (an NTFS alternate data stream), no extra dots, and never a Windows device name such as CON.
+const EVIDENCE_NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\.evidence\.jsonl$/;
+const DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+
+export function isEvidenceName(name) {
+  return typeof name === "string" && EVIDENCE_NAME.test(name) && !DEVICE_NAME.test(name.slice(0, -EVIDENCE_SUFFIX.length));
+}
 
 // Missing or short key: throw. A receipt without a signature is not evidence, so nothing is written.
 export function signingKey(env = process.env) {
@@ -94,9 +105,15 @@ function macEqual(expected, actual) {
 }
 
 // Removes a file this process just created. Windows cannot delete a read-only file, so the flag is cleared first.
+// Returns false when the file is still there, so the caller can say so instead of claiming a clean rollback.
 async function discard(path) {
   await chmod(path, 0o644).catch(() => {});
-  await rm(path, { force: true }).catch(() => {});
+  try {
+    await rm(path, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Flushes a directory's entries to stable storage, so a completed rename survives a crash.
@@ -162,33 +179,60 @@ export async function latestHash(dir) {
   return parsed.hash;
 }
 
-// Writes the screenshot (if any) and the signed receipt. On any failure the screenshot and the receipt fields are
-// rolled back and the error is thrown, so the caller can report ERROR.
 // Advisory lock around the head read and the receipt write, so two writers cannot link to the same head. Node has no
 // flock, so the lock is an exclusive create of LOCK_NAME holding {"pid", "host"}, removed on exit.
 // A lock is reclaimed only when its owner is provably gone: same host and the pid no longer exists. A lock held by a
 // live process or by another host is never taken over, by age or otherwise; the wait then ends with an error.
+// Writers inside one process queue up first, so a lock file naming this process's own pid can only be a leftover of an
+// earlier write whose cleanup failed, and is reclaimed at once.
 // Known limits (recorded in the README): a pid can be reused after a crash, so a stale lock can look live until the
 // pid is reused; and two reclaimers racing on the same stale lock can, in a narrow window, remove a fresh lock.
-export async function withChainLock(dir, timeoutMs, fn) {
-  const lockPath = join(dir, LOCK_NAME);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await tryCreateLock(lockPath)) break;
-    if (await reclaimIfStale(lockPath)) continue;
-    if (Date.now() >= deadline) {
-      throw new Error(`receipts in ${dir} are locked by another writer; if no writer is running, remove ${LOCK_NAME}`);
-    }
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
+const queues = new Map(); // lock path -> promise that settles when the last queued writer of this process is done
+
+function lockedError(dir) {
+  return new Error(`receipts in ${dir} are locked by another writer; if no writer is running, remove ${LOCK_NAME}`);
+}
+
+async function queueInProcess(lockPath, dir, timeoutMs, task) {
+  const previous = queues.get(lockPath) ?? Promise.resolve();
+  let finish;
+  const done = new Promise(resolve => { finish = resolve; });
+  const tail = previous.then(() => done);
+  queues.set(lockPath, tail);
   try {
-    return await fn();
+    let timer;
+    const timedOut = new Promise((_, reject) => { timer = setTimeout(() => reject(lockedError(dir)), timeoutMs); });
+    try {
+      await Promise.race([previous, timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+    return await task();
   } finally {
-    // Best effort. If fn succeeded, the receipt is already on disk, and a failure to remove the lock must not turn that
-    // success into an error (the caller would report ERROR next to a valid signed receipt). A lock left behind is
-    // reclaimed by the next writer once this process has exited (same host, pid gone).
-    await rm(lockPath, { force: true }).catch(() => {});
+    finish();
+    tail.then(() => { if (queues.get(lockPath) === tail) queues.delete(lockPath); });
   }
+}
+
+export function withChainLock(dir, timeoutMs, fn) {
+  const lockPath = join(dir, LOCK_NAME);
+  return queueInProcess(lockPath, dir, timeoutMs, async () => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await tryCreateLock(lockPath)) break;
+      if (await reclaimIfStale(lockPath)) continue;
+      if (Date.now() >= deadline) throw lockedError(dir);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    try {
+      return await fn();
+    } finally {
+      // Best effort. If fn succeeded, the receipt is already on disk, and a failure to remove the lock must not turn that
+      // success into an error (the caller would report ERROR next to a valid signed receipt). A lock left behind is
+      // reclaimed by the next writer: at once if it names this process, once the process is gone if another.
+      await rm(lockPath, { force: true }).catch(() => {});
+    }
+  });
 }
 
 async function tryCreateLock(lockPath) {
@@ -213,7 +257,10 @@ async function tryCreateLock(lockPath) {
 // Returns true when the lock was removed (or already gone) and the caller should retry at once.
 async function reclaimIfStale(lockPath) {
   const owner = await readLockOwner(lockPath);
-  if (!owner || owner.host !== hostname() || processAlive(owner.pid)) return false;
+  if (!owner || owner.host !== hostname()) return false;
+  // Writers of this process are queued (queueInProcess), so none holds the lock while we look: a lock that names our own
+  // pid is a leftover, however alive the pid is. For any other pid, alive means held.
+  if (owner.pid !== process.pid && processAlive(owner.pid)) return false;
   const claimed = `${lockPath}.stale-${randomBytes(6).toString("hex")}`;
   try {
     await rename(lockPath, claimed);
@@ -261,12 +308,15 @@ function processAlive(pid) {
 // Returns { receiptPath, evidencePath }. Everything is written after the ordering check, inside the lock, so a refused
 // receipt never touches a file that belongs to an earlier run; on any failure every file this call wrote is removed.
 export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTimeoutMs = LOCK_TIMEOUT_MS }) {
+  assertStorable(receipt);
+  if (evidence !== undefined && Buffer.byteLength(evidence, "utf8") > MAX_EVIDENCE_BYTES) {
+    throw new Error(`the evidence is larger than ${MAX_EVIDENCE_BYTES} bytes; nothing was written`);
+  }
   await mkdir(dir, { recursive: true });
   const stamp = fileStamp(receipt.at);
   const rev = revisionOrUnknown(receipt.revision);
   const newName = `${stamp}-${rev}.json`;
-  const evidenceBefore = receipt.evidence;
-  const written = [];
+  const before = { screenshot: receipt.screenshot, evidence: receipt.evidence, keyId: receipt.keyId, prevHash: receipt.prevHash };
   try {
     return await withChainLock(dir, lockTimeoutMs, async () => {
       // The head is the newest receipt by name, and verify reads names in that order. A new receipt must sort after
@@ -275,69 +325,110 @@ export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTime
       if (existing.length > 0 && basename(existing.at(-1)) >= newName) {
         throw new Error(`receipt ${newName} is not later than the chain head ${basename(existing.at(-1))}; not written, so the chain does not fork`);
       }
-      let evidencePath = null;
-      if (shot) {
-        const shotPath = join(dir, `${stamp}-${rev}.png`);
-        written.push(shotPath);
-        await writeAtomic(shotPath, shot);
-        receipt.screenshot = shotPath;
+      const written = [];
+      try {
+        let evidencePath = null;
+        if (shot) {
+          const shotPath = join(dir, `${stamp}-${rev}.png`);
+          await writeAtomic(shotPath, shot);
+          written.push(shotPath); // tracked once it exists, so a rollback never touches something this call did not create
+          receipt.screenshot = shotPath;
+        }
+        if (evidence !== undefined) {
+          const name = `${stamp}-${rev}${EVIDENCE_SUFFIX}`;
+          evidencePath = join(dir, name);
+          await writeAtomic(evidencePath, evidence);
+          written.push(evidencePath);
+          receipt.evidence = { file: name, sha256: sha256Hex(evidence), bytes: Buffer.byteLength(evidence, "utf8") };
+        }
+        receipt.keyId = keyIdOf(key);
+        receipt.prevHash = await latestHash(dir);
+        inStoredOrder(receipt); // keyId and prevHash land after `next`, the order the Go struct writes them in
+        const body = canonicalBody(receipt);
+        receipt.hash = sha256Hex(body);
+        receipt.mac = signBody(body, key);
+        const receiptPath = join(dir, newName);
+        await writeAtomic(receiptPath, fileBody(receipt));
+        written.push(receiptPath);
+        return { receiptPath, evidencePath };
+      } catch (error) {
+        // Still inside the lock: until these files are gone, another writer could link to a receipt that is about to vanish.
+        const leftovers = [];
+        for (const path of written) if (!(await discard(path))) leftovers.push(path);
+        if (leftovers.length > 0) error.message = `${error.message}; could not remove ${leftovers.join(", ")}, so check the receipts directory`;
+        throw error;
       }
-      if (evidence !== undefined) {
-        const name = `${stamp}-${rev}${EVIDENCE_SUFFIX}`;
-        evidencePath = join(dir, name);
-        written.push(evidencePath);
-        await writeAtomic(evidencePath, evidence);
-        receipt.evidence = { file: name, sha256: sha256Hex(evidence), bytes: Buffer.byteLength(evidence, "utf8") };
-      }
-      // Fields are re-appended so keyId and prevHash sit after `next`, the order the Go struct writes them in.
-      delete receipt.keyId;
-      delete receipt.prevHash;
-      receipt.keyId = keyIdOf(key);
-      receipt.prevHash = await latestHash(dir);
-      const body = canonicalBody(receipt);
-      receipt.hash = sha256Hex(body);
-      receipt.mac = signBody(body, key);
-      const receiptPath = join(dir, newName);
-      written.push(receiptPath);
-      await writeAtomic(receiptPath, fileBody(receipt));
-      return { receiptPath, evidencePath };
     });
   } catch (error) {
-    for (const path of written) await discard(path);
-    receipt.screenshot = null;
-    if (evidenceBefore === undefined) delete receipt.evidence;
-    else receipt.evidence = evidenceBefore;
+    // The caller keeps its object: put back what this call changed, and leave no chain fields on an unwritten receipt.
+    restoreField(receipt, "screenshot", before.screenshot);
+    restoreField(receipt, "evidence", before.evidence);
+    restoreField(receipt, "keyId", before.keyId);
+    restoreField(receipt, "prevHash", before.prevHash);
     delete receipt.hash;
     delete receipt.mac;
     throw error;
   }
 }
 
-// Checks every receipt in name order: body hashes to its hash, prevHash links to the one before, and the MAC verifies.
-// Returns problems (one per bad receipt) and the number of receipts checked. A read error throws: nothing can be said.
-// The evidence file a receipt names, if any. A changed file is a problem. A missing file is not: evidence can be pruned,
-// and the failures themselves are in the signed receipt, so deleting evidence cannot hide one.
+// A receipt may hold only fields the format stores. Anything else would make the file differ from the one verify
+// expects, so it is refused before anything is written.
+function assertStorable(receipt) {
+  const unknown = Object.keys(receipt).filter(key => !STORED_FIELDS.includes(key));
+  if (unknown.length > 0) throw new Error(`the receipt has fields the format does not store: ${unknown.join(", ")}`);
+}
+
+// The stored fields in the order the format writes them, whatever order the caller built the object in.
+function inStoredOrder(receipt) {
+  const ordered = knownFieldsOnly(receipt);
+  for (const key of Object.keys(receipt)) delete receipt[key];
+  Object.assign(receipt, ordered);
+}
+
+function restoreField(receipt, key, value) {
+  if (value === undefined) delete receipt[key];
+  else receipt[key] = value;
+}
+
+async function sha256OfFile(path) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+// The evidence file a receipt names, if any. A changed or unreadable file is a problem. A missing file is not: evidence
+// can be pruned, and the failures themselves are in the signed receipt, so deleting evidence cannot hide one.
 async function evidenceIssue(dir, receipt) {
   const evidence = receipt.evidence;
   if (evidence === undefined || evidence === null) return null;
   const file = evidence?.file;
-  // The name must be a plain file next to the receipt, so a forged reference cannot make verify read anywhere else.
-  if (typeof file !== "string" || typeof evidence.sha256 !== "string" || file !== basename(file) || !file.endsWith(EVIDENCE_SUFFIX)) {
+  // The name must be a plain evidence file next to the receipt, so a forged reference cannot make verify read anywhere else.
+  if (!isEvidenceName(file) || typeof evidence.sha256 !== "string") {
     return { problem: `evidence reference is malformed (it must name a plain *${EVIDENCE_SUFFIX} file next to the receipt, with a sha256)` };
   }
-  let bytes;
+  const path = join(dir, file);
+  const unreadable = error => ({ problem: `evidence file ${file} cannot be read (${error.code ?? "error"})` });
+  let info;
   try {
-    bytes = await readFile(join(dir, file));
+    info = await lstat(path); // lstat: a symbolic link is not followed
   } catch (error) {
-    if (error.code === "ENOENT") return { missing: file };
-    throw error;
+    return error.code === "ENOENT" ? { missing: file } : unreadable(error);
   }
-  if (createHash("sha256").update(bytes).digest("hex") !== evidence.sha256) {
-    return { problem: `evidence file ${file} does not match the hash recorded in the receipt` };
+  if (!info.isFile()) return { problem: `evidence file ${file} is not a plain file` };
+  if (info.size > MAX_EVIDENCE_BYTES) return { problem: `evidence file ${file} is larger than ${MAX_EVIDENCE_BYTES} bytes` };
+  let digest;
+  try {
+    digest = await sha256OfFile(path);
+  } catch (error) {
+    return unreadable(error);
   }
+  if (digest !== evidence.sha256) return { problem: `evidence file ${file} does not match the hash recorded in the receipt` };
   return null;
 }
 
+// Checks every receipt in name order: body hashes to its hash, prevHash links to the one before, the MAC verifies, and
+// any evidence file it names still matches. Returns problems (one per bad receipt), the number of receipts checked, and
+// the evidence files that are gone. A read error on a receipt throws: nothing can be said.
 export async function verifyChain(dir, key) {
   const files = await receiptFiles(dir);
   if (files.length === 0) throw new Error(`no receipts in ${dir}`);

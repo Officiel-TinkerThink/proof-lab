@@ -3,19 +3,18 @@
 // Usage: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { startApp } from "./server.js";
+import { REVISION_HEADER, startApp } from "./server.js";
 import { environmentWithoutKey, fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
 import { clipValue, evidenceText, summarize, summarizePageErrors } from "./spec/evidence.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { STEPS } from "./spec/steps.js";
-import { firstLine } from "./spec/util.js";
+import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 export { validateSpec };
 
@@ -23,8 +22,13 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts");
 const EXIT = { PASS: 0, FAIL: 1, ERROR: 2 };
 const MAX_CONSOLE_RECORDS = 500;
+const MAX_PAGE_ERRORS_KEPT = 100;
 const MAX_FAILURE_CONTEXTS = 5;
+const MAX_REVISION_RECHECKS = 50;
 const ARIA_CHARS = 8000;
+// Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
+// step that never returns at all (a frozen page does not answer count() or title()).
+const STEP_GRACE_MS = 20000;
 
 // "check" names the step in the receipt. "name" without a role is the older spelling of it.
 function labelOf(step, index) {
@@ -35,10 +39,13 @@ function labelOf(step, index) {
 
 function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
   const ctx = {
-    page, appUrl, specDir, timeoutMs, checks, index: 0,
+    page, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [],
     record(step, pass, expected, actual, error) {
-      // An optional step is allowed to fail: it leaves no failed check (the evidence timeline still shows it).
-      if (!pass && step.optional) return;
+      // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
+      if (!pass && step.optional) {
+        ctx.suppressed.push(`${labelOf(step, ctx.index)}: expected ${JSON.stringify(clipValue(expected))}, got ${JSON.stringify(clipValue(actual))}`);
+        return;
+      }
       const check = { step: ctx.index, name: labelOf(step, ctx.index), pass, expected, actual };
       if (!pass && step.hint) check.hint = step.hint;
       if (!pass && error) check.error = error;
@@ -51,34 +58,37 @@ function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
 // A step the page did not allow is a failed check, not an ERROR: the run goes on so the receipt lists every failure.
 async function runStep(ctx, step) {
   const first = ctx.checks.length;
+  const suppressedBefore = ctx.suppressed.length;
   const started = performance.now();
   const record = { type: "step", step: ctx.index, op: step.op, check: labelOf(step, ctx.index) };
   const target = describeTarget(step);
   if (target) record.target = target;
   try {
-    await STEPS[step.op](ctx, step);
+    await bounded(STEPS[step.op](ctx, step), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS, `step ${ctx.index} (${step.op})`);
   } catch (error) {
     if (step.optional) {
       record.skipped = firstLine(error);
     } else {
-      const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op} ${target}).`.replace(/ \)/, ")");
+      const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op}${target ? ` ${target}` : ""}).`;
       ctx.record({ ...step, hint }, false, `${step.op} completes`, null, firstLine(error));
     }
   }
+  const suppressed = ctx.suppressed.slice(suppressedBefore);
+  if (suppressed.length > 0 && record.skipped === undefined) record.skipped = `optional check failed: ${suppressed[0]}`;
   record.ms = Math.round(performance.now() - started);
   record.ok = ctx.checks.slice(first).every(check => check.pass);
   return record;
 }
 
 // What the page looked like when a check failed: the address, the title, and the accessibility tree (what an agent
-// "sees"). The first failure also gets a small picture.
+// "sees"). The first failure also gets a small picture. Every call is bounded: a frozen page answers none of them.
 async function captureContext(page, step, withPicture) {
   const context = { type: "context", step, url: null, title: null, aria: null };
   const records = [context];
   try {
     context.url = page.url();
-    context.title = await page.title();
-  } catch { /* the page may be gone */ }
+    context.title = await bounded(page.title(), 2000, "reading the title");
+  } catch { /* the page may be gone or frozen */ }
   try {
     context.aria = clipValue(await page.locator("body").ariaSnapshot({ timeout: 2000 }), ARIA_CHARS);
   } catch (error) {
@@ -86,11 +96,24 @@ async function captureContext(page, step, withPicture) {
   }
   if (withPicture) {
     try {
-      const jpeg = await page.screenshot({ type: "jpeg", quality: 60, timeout: 3000 });
+      const jpeg = await bounded(page.screenshot({ type: "jpeg", quality: 60, timeout: 3000 }), 5000, "taking the picture");
       records.push({ type: "screenshot", step, mime: "image/jpeg", base64: jpeg.toString("base64") });
     } catch { /* no picture is not a failure */ }
   }
   return records;
+}
+
+// Did any page the run loaded change on the server while the run was going? Every page of the app says its revision in a
+// response header. A page loaded twice with two revisions is caught as it happens; a page loaded once is asked again now.
+async function revisionDrift(seen) {
+  for (const [url, revision] of [...seen].slice(0, MAX_REVISION_RECHECKS)) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(3000), redirect: "manual" });
+      const now = response.headers.get(REVISION_HEADER);
+      if (now !== null && now !== revision) return `${new URL(url).pathname} was ${revision} when loaded and is ${now} now`;
+    } catch { /* an app that cannot be asked again cannot be compared; the run itself stands */ }
+  }
+  return null;
 }
 
 // Runs one spec file. Returns the receipt as stored, plus a non-stored `detail` (the evidence, in memory).
@@ -126,15 +149,23 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   receipt.bug = spec.app?.bug ?? null;
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pageErrors = new Set();
+  let pageErrorsDropped = 0;
+  const noteError = message => {
+    if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(clipValue(message, 1000));
+    else if (!pageErrors.has(clipValue(message, 1000))) pageErrorsDropped += 1;
+  };
   const consoleRecords = [];
   let consoleDropped = 0;
   const stepRecords = [];
   const contextRecords = [];
   const checks = [];
+  const seenRevisions = new Map();
+  let changedWhileRunning = null;
   let server = null;
   let browser = null;
   let shot = null;
   let browserVersion = null;
+  let completed = false;
 
   try {
     if (spec.app?.url) {
@@ -149,17 +180,28 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     const page = await context.newPage();
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(Math.max(timeoutMs, 10000));
-    page.on("pageerror", error => pageErrors.add(error.message));
+    page.on("pageerror", error => noteError(error.message));
     page.on("console", message => {
-      if (message.type() === "error") pageErrors.add(message.text());
+      if (message.type() === "error") noteError(message.text());
       if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level: message.type(), text: clipValue(message.text(), 1000) });
       else consoleDropped += 1;
+    });
+    page.on("response", response => {
+      try {
+        if (response.request().resourceType() !== "document") return;
+        const revision = response.headers()[REVISION_HEADER];
+        if (!revision) return;
+        const url = response.url();
+        if (seenRevisions.has(url) && seenRevisions.get(url) !== revision) {
+          changedWhileRunning ??= `${new URL(url).pathname} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
+        }
+        seenRevisions.set(url, revision);
+      } catch { /* a response of a page that is already closing */ }
     });
 
     // Without app.start the run opens the app exactly as given (an app.url with a path keeps its path).
     const firstUrl = spec.app?.start === undefined ? receipt.app : new URL(spec.app.start, receipt.app).href;
     await page.goto(firstUrl, { waitUntil: "load" });
-    const landed = new URL(page.url()); // after any redirect: the page whose revision is recorded
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
     const ctx = createContext({ page, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
@@ -167,39 +209,41 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       ctx.index = i + 1;
       const first = checks.length;
       stepRecords.push(await runStep(ctx, step));
-      if (checks.slice(first).some(check => !check.pass) && contextRecords.filter(r => r.type === "context").length < MAX_FAILURE_CONTEXTS) {
-        contextRecords.push(...await captureContext(ctx.page, ctx.index, !contextRecords.some(r => r.type === "screenshot")));
+      const failedNow = checks.slice(first).some(check => !check.pass);
+      if (failedNow && contextRecords.filter(record => record.type === "context").length < MAX_FAILURE_CONTEXTS) {
+        const pictured = contextRecords.some(record => record.type === "screenshot");
+        const captured = await bounded(captureContext(ctx.page, ctx.index, !pictured), 12000, "capturing the page")
+          .catch(error => [{ type: "context", step: ctx.index, url: null, title: null, aria: null, ariaError: firstLine(error) }]);
+        contextRecords.push(...captured);
       }
-    }
-    if (spec.noPageErrors === true) {
-      checks.push({
-        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: [...pageErrors],
-        ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read the console records in the evidence file." } : {}),
-      });
     }
 
-    // The built-in app can change on disk during a run; evidence from two builds proves neither.
-    // Only a page that carries a revision can be compared, and only on the origin the server serves.
-    if (server && receipt.revision !== null && landed.origin === new URL(receipt.app).origin) {
-      const query = landed.pathname.startsWith("/fixtures/") ? `?path=${encodeURIComponent(landed.pathname)}` : "";
-      const response = await fetch(new URL(`/__revision${query}`, receipt.app), { signal: AbortSignal.timeout(2000) });
-      const now = (await response.json()).revision;
-      if (now !== receipt.revision) {
-        throw new Error(`the app changed while running (loaded ${receipt.revision}, now ${now}); evidence from two builds proves neither`);
-      }
-    }
+    // The app can change on disk during a run; evidence from two builds proves neither.
+    const drift = changedWhileRunning ?? await revisionDrift(seenRevisions);
+    if (drift) throw new Error(`the app changed while running (${drift}); evidence from two builds proves neither`);
     shot = await ctx.page.screenshot({ fullPage: true });
-    if (checks.length === 0) {
-      receipt.error = "No checks were recorded. Add assertions to the spec.";
-    } else {
-      receipt.verdict = checks.every(check => check.pass) ? "PASS" : "FAIL";
-    }
+    completed = true;
   } catch (error) {
     receipt.verdict = "ERROR";
     receipt.error = `run failed: ${firstLine(error)}`;
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (server) await server.close().catch(() => {});
+  }
+
+  if (completed) {
+    // Last, so an error thrown late in the run (during the guard or the final screenshot) is still seen by this check.
+    if (spec.noPageErrors === true) {
+      checks.push({
+        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: summarizePageErrors([...pageErrors]),
+        ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read the console records in the evidence file." } : {}),
+      });
+    }
+    if (checks.length === 0) {
+      receipt.error = "No checks were recorded. Add assertions to the spec.";
+    } else {
+      receipt.verdict = checks.every(check => check.pass) ? "PASS" : "FAIL";
+    }
   }
 
   const { totals, failures } = summarize(checks);
@@ -224,6 +268,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     ...consoleRecords,
     ...(consoleDropped > 0 ? [{ type: "console-truncated", dropped: consoleDropped }] : []),
     ...[...pageErrors].map(message => ({ type: "pageerror", message })),
+    ...(pageErrorsDropped > 0 ? [{ type: "pageerror-truncated", dropped: pageErrorsDropped }] : []),
     { type: "summary", verdict: receipt.verdict, totals, error: receipt.error },
   ];
   const detail = { checks, steps: stepRecords, contexts: contextRecords, console: consoleRecords, pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
@@ -236,33 +281,30 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   } catch (error) {
     receipt.verdict = "ERROR";
     receipt.error = `receipt write failed: ${firstLine(error)}`;
-    receipt.next = [receipt.error, "No receipt file was written, so this run is not evidence. Fix the receipts directory and run again."];
+    receipt.next = [receipt.error, "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again."];
   }
   Object.defineProperty(receipt, "detail", { value: detail, enumerable: false });
   return receipt;
 }
 
-function isMain() {
-  if (!process.argv[1]) return false;
-  try {
-    // Real paths, so a symlink, a junction or a different drive-letter case still starts the CLI instead of exiting 0 silently.
-    return realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
+const CLI_OPTIONS = {
+  spec: { type: "string" },
+  "key-file": { type: "string" },
+  receipts: { type: "string" },
+  json: { type: "boolean" },
+};
 
-// CLI: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]
-async function main(args) {
-  const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+// CLI: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]. Returns the exit code.
+export async function main(args) {
+  const values = parseCli(args, CLI_OPTIONS);
   if (process.env.PROOF_LAB_KEY !== undefined) {
     throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
   }
-  if (!flag("--key-file")) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
-  if (!flag("--spec")) throw new Error("--spec <file.json> is required");
-  const key = await signingKeyFromFile(flag("--key-file"));
-  const receipt = await runSpec({ specPath: flag("--spec"), key, receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS });
-  if (args.includes("--json")) {
+  if (!values["key-file"]) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
+  if (!values.spec) throw new Error("--spec <file.json> is required");
+  const key = await signingKeyFromFile(values["key-file"]);
+  const receipt = await runSpec({ specPath: values.spec, key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS });
+  if (values.json) {
     console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ?? null, evidenceFile: receipt.detail?.evidencePath ?? null }, null, 2));
   } else {
     const totals = receipt.totals;
@@ -273,12 +315,12 @@ async function main(args) {
     if (receipt.detail?.receiptPath) console.log(`  receipt:  ${receipt.detail.receiptPath}`);
     if (receipt.detail?.evidencePath) console.log(`  evidence: ${receipt.detail.evidencePath}`);
   }
-  process.exitCode = EXIT[receipt.verdict];
+  return EXIT[receipt.verdict];
 }
 
-if (isMain()) {
+if (isMainModule(import.meta.url)) {
   try {
-    await main(process.argv.slice(2));
+    process.exitCode = await main(process.argv.slice(2));
   } catch (error) {
     // Exit 2, never 1: 1 means "a check failed", and an unexpected exception is not that.
     console.error(`ERROR: ${firstLine(error)}`);

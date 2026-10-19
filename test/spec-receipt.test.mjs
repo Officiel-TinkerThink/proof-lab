@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import http from "node:http";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,6 +136,146 @@ test("console output and page errors are kept; noPageErrors turns an error into 
   await withRun(clean, async receipt => {
     assert.equal(receipt.verdict, "PASS", explain(receipt));
     assert.equal(receipt.totals.checks, 2);
+  });
+});
+
+// A tiny app that sends its revision in a header, and changes it from the Nth request of "/" on.
+async function appWithRevisions(changeAtRequest) {
+  let requests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    requests += 1;
+    const revision = requests >= changeAtRequest ? "bbbbbbbbbbbb" : "aaaaaaaaaaaa";
+    res.writeHead(200, { "content-type": "text/html", "x-app-revision": revision });
+    res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="app-revision" content="${revision}"><title>t</title><link rel="icon" href="data:,"></head><body><h1>hi</h1></body></html>`);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+}
+
+test("a page that changes between two loads, or after the run, makes the run ERROR; a steady one passes", TIMEOUT, async () => {
+  const spec = (url, steps) => ({ name: "drift", app: { url }, steps });
+  const heading = { op: "assertText", check: "heading", selector: "h1", equals: "hi" };
+
+  const steady = await appWithRevisions(Number.POSITIVE_INFINITY);
+  try {
+    await withRun(spec(steady.url, [heading, { op: "reload" }, heading]), async receipt => {
+      assert.equal(receipt.verdict, "PASS", explain(receipt));
+      assert.equal(receipt.revision, "aaaaaaaaaaaa");
+    });
+  } finally {
+    await steady.close();
+  }
+
+  const reloaded = await appWithRevisions(2); // the reload is the second request
+  try {
+    await withRun(spec(reloaded.url, [heading, { op: "reload" }, heading]), async receipt => {
+      assert.equal(receipt.verdict, "ERROR");
+      assert.match(receipt.error, /the app changed while running \(\/ was aaaaaaaaaaaa and became bbbbbbbbbbbb between two loads\)/);
+    });
+  } finally {
+    await reloaded.close();
+  }
+
+  const afterwards = await appWithRevisions(2); // no reload: the check at the end is the second request
+  try {
+    await withRun(spec(afterwards.url, [heading]), async receipt => {
+      assert.equal(receipt.verdict, "ERROR");
+      assert.match(receipt.error, /\/ was aaaaaaaaaaaa when loaded and is bbbbbbbbbbbb now/);
+    });
+  } finally {
+    await afterwards.close();
+  }
+});
+
+async function serveHtml(html) {
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(html);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+}
+
+test("an optional check that fails is shown as skipped in the timeline, not as ok", TIMEOUT, async () => {
+  const spec = page("/fixtures/forms.html", [
+    { op: "goto", url: "/api/status/404", status: 200, optional: true },
+    { op: "goto", url: "/fixtures/forms.html" },
+    { op: "assertState", check: "back on the form", label: "Name", state: "enabled" },
+  ]);
+  await withRun(spec, async receipt => {
+    assert.equal(receipt.verdict, "PASS", explain(receipt));
+    assert.equal(receipt.totals.checks, 1);
+    const first = ofType(await records(receipt.detail.evidencePath), "step")[0];
+    assert.equal(first.ok, true);
+    assert.match(first.skipped, /^optional check failed: step 1: goto: expected 200, got 404$/);
+  });
+});
+
+test("page errors are capped in memory and in the evidence, and counted", TIMEOUT, async () => {
+  const app = await serveHtml(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>noisy</title><link rel="icon" href="data:,"></head><body><h1>noisy</h1><script>for (let i = 0; i < 300; i++) console.error("error number " + i);</script></body></html>`);
+  try {
+    const spec = { name: "noisy", app: { url: app.url }, noPageErrors: true, steps: [{ op: "assertTitle", check: "titled", equals: "noisy" }] };
+    await withRun(spec, async receipt => {
+      assert.equal(receipt.verdict, "FAIL");
+      assert.equal(receipt.pageErrors.length, 10);
+      const all = await records(receipt.detail.evidencePath);
+      assert.equal(ofType(all, "pageerror").length, 100);
+      assert.deepEqual(ofType(all, "pageerror-truncated"), [{ type: "pageerror-truncated", dropped: 200 }]);
+      assert.equal(ofType(all, "console").length, 300);
+      const failed = receipt.checks.find(check => check.name === "no page errors");
+      assert.equal(failed.actual.length, 10);
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("a frozen page ends the run as ERROR with a receipt, it does not hang the run", { timeout: 240000 }, async () => {
+  const app = await serveHtml(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>frozen</title><link rel="icon" href="data:,"></head><body><h1>alive</h1><button id="freeze" onclick="while (true) {}">Freeze</button></body></html>`);
+  try {
+    const spec = {
+      name: "frozen", app: { url: app.url }, timeoutMs: 1000,
+      steps: [
+        { op: "assertText", check: "alive", selector: "h1", equals: "alive" },
+        { op: "click", check: "freeze the page", selector: "#freeze" },
+        { op: "assertText", check: "still readable", selector: "h1", equals: "alive" },
+      ],
+    };
+    await withRun(spec, async (receipt, dir) => {
+      assert.ok(["ERROR", "FAIL"].includes(receipt.verdict), `the run must end, with ${receipt.verdict}`);
+      assert.ok(receipt.detail.receiptPath, "a receipt is written even for a frozen page");
+      assert.deepEqual((await verifyChain(dir, KEY)).problems, []);
+      const steps = ofType(await records(receipt.detail.evidencePath), "step");
+      assert.ok(steps.length >= 2, "the steps before the freeze were recorded");
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("a fixture page reached by goto is covered by the revision guard too", TIMEOUT, async () => {
+  const spec = {
+    name: "fixtures-guard",
+    steps: [
+      { op: "assertText", check: "waitlist app", testId: "status", equals: "none" },
+      { op: "goto", url: "/fixtures/forms.html" },
+      { op: "assertTitle", check: "forms fixture", equals: "Fixture: forms" },
+      { op: "goto", url: "/fixtures/nav.html" },
+      { op: "assertTitle", check: "nav fixture", equals: "Fixture: navigation" },
+    ],
+  };
+  await withRun(spec, async receipt => {
+    assert.equal(receipt.verdict, "PASS", explain(receipt));
   });
 });
 

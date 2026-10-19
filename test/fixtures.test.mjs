@@ -52,6 +52,21 @@ test("the redirect endpoint only ever redirects to a path on this server", async
     assert.equal(response.status, 302, to);
     assert.equal(response.headers.location, fallback, `to=${to}`);
   }
+  // Dot segments can turn "/./" + "/host" into the path "//host". The emitted Location must still start with one slash.
+  const sneaky = [
+    "/.//evil.example",
+    "/%2e//evil.example",
+    "/./%5Cevil.example",
+    "/a/..//evil.example",
+    "/a/../%5Cevil.example",
+    "/././/evil.example",
+    "/fixtures/..//evil.example",
+  ];
+  for (const to of sneaky) {
+    const response = await request(`/api/redirect?to=${to}`);
+    assert.equal(response.status, 302, to);
+    assert.ok(/^\/(?!\/)/.test(response.headers.location), `to=${to} gave Location ${response.headers.location}`);
+  }
   // CR and LF inside the target are stripped by URL parsing, so they never reach the header and the target stays on this server.
   const injected = await request("/api/redirect?to=/%0d%0aSet-Cookie:%20x=1");
   assert.equal(injected.status, 302);
@@ -88,6 +103,14 @@ test("only this machine's own host names are served (DNS rebinding)", async () =
   assert.equal((await request("/", { headers: { host: `localhost:${port}` } })).status, 200);
   assert.equal((await request("/", { headers: { host: `127.0.0.1:${port}` } })).status, 200);
   assert.equal((await request("/", { headers: { host: "localhost" } })).status, 200);
+});
+
+test("a request target the URL parser rejects is a 400 and the server stays up", async () => {
+  for (const target of ["//[", "http://[", "//%", "/\u0000"]) {
+    const status = await rawStatus(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+    assert.ok([400, 404].includes(status), `${JSON.stringify(target)} gave ${status}`);
+  }
+  assert.equal((await request("/")).status, 200, "the server must still answer");
 });
 
 test("the counter needs the guard header to move", async () => {
@@ -142,6 +165,16 @@ test("the cookie endpoint accepts a plain token only and the download is an atta
   assert.equal(download.status, 200);
   assert.match(download.headers["content-disposition"], /^attachment; filename="hello\.txt"$/);
   assert.equal(download.body, "hello from proof-lab\n");
+});
+
+test("the app and every fixture page say their revision in a header; API answers do not", async () => {
+  const appPage = await request("/");
+  assert.match(appPage.headers["x-app-revision"], /^[0-9a-f]{12}$/);
+  assert.equal(appPage.headers["x-app-revision"], JSON.parse((await request("/__revision")).body).revision);
+  const forms = await request("/fixtures/forms.html");
+  assert.equal(forms.headers["x-app-revision"], /content="([0-9a-f]{12})"/.exec(forms.body)[1]);
+  assert.equal((await request("/api/items")).headers["x-app-revision"], undefined);
+  assert.equal((await request("/download/hello.txt")).headers["x-app-revision"], undefined);
 });
 
 test("the revision endpoint answers for the app and for fixture pages only", async () => {

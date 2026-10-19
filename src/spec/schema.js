@@ -24,7 +24,7 @@ const MATCH_ONE = ["equals", "contains", "matches"];
 const KEY_MODIFIERS = ["Alt", "Control", "ControlOrMeta", "Meta", "Shift"];
 const STATES = ["enabled", "disabled", "editable", "checked", "unchecked", "indeterminate", "focused", "attached", "detached", "inViewport"];
 // g and y make a RegExp remember where it stopped, so repeated reads of the same text would disagree.
-const REGEX_FLAGS = /^[imsuv]*$/;
+const REGEX_FLAGS = /^[dimsuv]*$/;
 
 const CLICK_FIELDS = { button: ["left", "right", "middle"], clickCount: "integer", modifiers: "array", position: "object", force: "boolean", delay: "number" };
 
@@ -69,7 +69,7 @@ export const OPS = {
 
   assertText: { target: "required", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
   assertValue: { target: "required", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
-  assertValues: { target: "required", assertion: true, fields: { equals: "array" }, required: ["equals"] },
+  assertValues: { target: "required", assertion: true, fields: { equals: "array" }, required: ["equals"], items: { equals: "string" } },
   assertVisible: { target: "required", assertion: true, fields: { visible: "boolean" } },
   assertState: { target: "required", assertion: true, fields: { state: STATES }, required: ["state"] },
   assertAttribute: { target: "required", assertion: true, fields: { attribute: "string", ...MATCH, absent: "boolean" }, required: ["attribute"], oneOf: [...MATCH_ONE, "absent"] },
@@ -79,7 +79,8 @@ export const OPS = {
   assertCount: { target: "required", assertion: true, fields: { count: "integer", min: "integer", max: "integer" }, anyOf: ["count", "min", "max"], forbidden: ["nth"], conflicts: [["count", "min"], ["count", "max"]] },
   assertUrl: { target: "none", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
   assertTitle: { target: "none", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
-  assertStorage: { target: "none", assertion: true, fields: { area: ["local", "session"], key: "string", path: "string", equals: "any", exists: "boolean" }, required: ["key"], oneOf: ["equals", "exists"] },
+  // path reads inside the stored value, so it needs equals: with exists it would be silently ignored.
+  assertStorage: { target: "none", assertion: true, fields: { area: ["local", "session"], key: "string", path: "string", equals: "any", exists: "boolean" }, required: ["key"], oneOf: ["equals", "exists"], conflicts: [["exists", "path"]] },
 };
 
 const TOP_LEVEL = { name: "string", app: "object", steps: "array", timeoutMs: "number", noPageErrors: "boolean" };
@@ -125,14 +126,19 @@ function checkRanges(owner, label, problems) {
   }
 }
 
-function checkItems(owner, label, problems) {
-  for (const [key, type] of Object.entries(ITEMS)) {
+function checkItems(owner, label, problems, extra = {}) {
+  for (const [key, type] of Object.entries({ ...ITEMS, ...extra })) {
     if (!Array.isArray(owner[key])) continue;
-    if (owner[key].length === 0) problems.push(`${label}.${key} must not be an empty list`);
+    if (owner[key].length === 0 && key !== "equals") problems.push(`${label}.${key} must not be an empty list`);
     owner[key].forEach((item, index) => {
       if (typeProblem(item, type)) problems.push(`${label}.${key}[${index}] must be ${type}`);
     });
   }
+  // An option index counts from 0.
+  const indexes = [].concat(owner.byIndex ?? []);
+  indexes.forEach((value, position) => {
+    if (typeof value === "number" && value < 0) problems.push(`${label}.byIndex${Array.isArray(owner.byIndex) ? `[${position}]` : ""} must be 0 or more`);
+  });
   if (Array.isArray(owner.modifiers)) {
     for (const name of owner.modifiers) {
       if (!KEY_MODIFIERS.includes(name)) problems.push(`${label}.modifiers must each be one of ${KEY_MODIFIERS.join(", ")}`);
@@ -145,7 +151,12 @@ function checkTarget(owner, label, { required, nested }, problems) {
   const keys = TARGET_KEYS.filter(key => owner[key] !== undefined);
   if (required && keys.length === 0) problems.push(`${label} needs a target: one of ${TARGET_KEYS.join(", ")}`);
   if (keys.length > 1) problems.push(`${label} has more than one target (${keys.join(", ")}); use one`);
-  if (owner.frame !== undefined && keys.length === 0) problems.push(`${label}: frame needs a target to look for inside it`);
+  // These only refine a target. Without one the runner would act on the page and drop them silently.
+  if (keys.length === 0) {
+    for (const refinement of ["frame", "nth", "hasText", "exact"]) {
+      if (owner[refinement] !== undefined) problems.push(`${label}: ${refinement} needs a target`);
+    }
+  }
   const misplaced = ROLE_ONLY_FIELDS.filter(key => owner[key] !== undefined);
   if (misplaced.length > 0 && owner.role === undefined) {
     problems.push(`${label}: ${misplaced.join(", ")} apply to a role target only; add role, or remove them`);
@@ -205,7 +216,7 @@ function validateStep(step, at) {
   }
 
   if (step.flags !== undefined && step.matches === undefined) problems.push(`${label}.flags only applies with matches`);
-  if (typeof step.flags === "string" && !REGEX_FLAGS.test(step.flags)) problems.push(`${label}.flags may only use i, m, s, u, v (g and y make a pattern remember state between reads)`);
+  if (typeof step.flags === "string" && !REGEX_FLAGS.test(step.flags)) problems.push(`${label}.flags may only use d, i, m, s, u, v (g and y make a pattern remember state between reads)`);
   if (typeof step.matches === "string") {
     try { new RegExp(step.matches, step.flags); } catch (error) {
       problems.push(`${label}.matches is not a valid regular expression: ${error.message}`);
@@ -216,9 +227,10 @@ function validateStep(step, at) {
   if (typeof step.timeout === "number") {
     if (definition.assertion && step.timeout < 0) problems.push(`${label}.timeout must not be negative`);
     if (!definition.assertion && step.timeout < 1) problems.push(`${label}.timeout must be at least 1 ms (0 would wait forever); only assertions may use 0, to read once`);
+    if (step.timeout > MAX_TIMEOUT_MS) problems.push(`${label}.timeout must be at most ${MAX_TIMEOUT_MS}`);
   }
   checkRanges(step, label, problems);
-  checkItems(step, label, problems);
+  checkItems(step, label, problems, definition.items);
   checkPosition(step, label, problems);
   if (typeof step.min === "number" && typeof step.max === "number" && step.min > step.max) problems.push(`${label}.min must not exceed max`);
   if (Array.isArray(step.files)) checkFiles(step.files, label, problems);
@@ -255,12 +267,14 @@ export function validateSpec(spec) {
   if (!isObject(spec)) return ["spec must be a JSON object"];
   const problems = [];
   checkFields(spec, "spec", TOP_LEVEL, problems);
-  if (typeof spec.name !== "string" || !/^[^\u0000-\u001f]{1,100}$/.test(spec.name.trim())) {
-    problems.push("name must be 1 to 100 characters, with no control characters");
+  // The name as written: a trailing newline, a DEL or a C1 control must not be trimmed away before the check.
+  if (typeof spec.name !== "string" || spec.name !== spec.name.trim() || /[\u0000-\u001f\u007f-\u009f]/.test(spec.name)
+    || [...spec.name].length < 1 || [...spec.name].length > 100) {
+    problems.push("name must be 1 to 100 characters, with no control characters and no leading or trailing space");
   }
   if (isObject(spec.app)) checkApp(spec.app, problems);
-  if (typeof spec.timeoutMs === "number" && !(spec.timeoutMs > 0 && spec.timeoutMs <= MAX_TIMEOUT_MS)) {
-    problems.push(`timeoutMs must be greater than 0 and at most ${MAX_TIMEOUT_MS}`);
+  if (typeof spec.timeoutMs === "number" && !(spec.timeoutMs >= 1 && spec.timeoutMs <= MAX_TIMEOUT_MS)) {
+    problems.push(`timeoutMs must be from 1 to ${MAX_TIMEOUT_MS}`);
   }
   if (!Array.isArray(spec.steps) || spec.steps.length === 0) {
     problems.push("steps must be a non-empty array");

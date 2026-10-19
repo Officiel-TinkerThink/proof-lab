@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,52 @@ test("the CLI exits 2, not 1, for every setup problem, and writes nothing", TIME
       assert.match(result.stdout, /error: (invalid spec|spec could not be read)/);
     }
     await assert.rejects(readdir(receipts), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the CLI refuses what it does not understand instead of falling back to a default", TIMEOUT, async () => {
+  const { dir, keyFile, receipts } = await workspace();
+  try {
+    const base = ["--spec", WAITLIST, "--key-file", keyFile];
+    const cases = [
+      ["a flag without its value, last", [...base, "--receipts"], /argument missing|receipts/i],
+      ["a flag that swallows the next flag", [...base, "--receipts", "--json"], /argument missing|receipts/i],
+      ["a misspelt flag", [...base, "--recipts", receipts], /Unknown option '--recipts'/],
+      ["a stray word", [...base, "stray"], /Unexpected argument 'stray'/],
+    ];
+    for (const [label, args, message] of cases) {
+      const result = cli(args);
+      assert.equal(result.status, 2, `${label}: ${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, message, label);
+    }
+    await assert.rejects(readdir(receipts), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the CLI starts however it is reached: without the extension, through a junction or link", TIMEOUT, async () => {
+  const { dir } = await workspace();
+  try {
+    // Each of these must run the CLI and fail on the missing key file with exit 2. Exit 0 with no output would read as PASS.
+    const withoutExtension = spawnSync(process.execPath, [join(ROOT, "src", "run-spec"), "--spec", WAITLIST], { encoding: "utf8" });
+    const viaDots = spawnSync(process.execPath, [join(ROOT, "src", "..", "src", "run-spec.js"), "--spec", WAITLIST], { encoding: "utf8" });
+    for (const [label, result] of [["without the extension", withoutExtension], ["through dot segments", viaDots]]) {
+      if (label === "without the extension" && /Cannot find module|ERR_MODULE_NOT_FOUND/.test(result.stderr)) continue; // Node itself refuses: nothing silent
+      assert.equal(result.status, 2, `${label}: ${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /--key-file <path> is required/, label);
+    }
+    const link = join(dir, "linked-src");
+    try {
+      await symlink(join(ROOT, "src"), link, "junction");
+    } catch {
+      return; // links cannot be created here
+    }
+    const viaLink = spawnSync(process.execPath, [join(link, "run-spec.js"), "--spec", WAITLIST], { encoding: "utf8" });
+    assert.equal(viaLink.status, 2, viaLink.stdout + viaLink.stderr);
+    assert.match(viaLink.stderr, /--key-file <path> is required/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

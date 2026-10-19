@@ -1,7 +1,7 @@
 // Durability and key-handling tests: key file mode, head ordering (fail closed), receipts lock, lock cleanup.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readdir, rm, writeFile, access } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,14 +106,17 @@ test("a lock left by a process that no longer exists is reclaimed", async () => 
 
 test("a lock held by a live process is never taken over", async () => {
   const dir = await tempDir();
+  // A lock naming this process's own pid is a leftover (writers here queue), so the live owner must be another process.
+  const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
   try {
-    await writeFile(join(dir, LOCK_NAME), JSON.stringify({ pid: process.pid, host: hostname() }));
+    await writeFile(join(dir, LOCK_NAME), JSON.stringify({ pid: owner.pid, host: hostname() }));
     await assert.rejects(
       writeReceipt(receiptAt("2026-01-01T00:00:00.000000007Z"), { key: Buffer.from(KEY), dir, lockTimeoutMs: 150 }),
       /locked by another writer/,
     );
     await access(join(dir, LOCK_NAME));
   } finally {
+    owner.kill();
     await rm(dir, { recursive: true, force: true });
   }
 });

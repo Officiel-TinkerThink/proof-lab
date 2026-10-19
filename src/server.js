@@ -18,6 +18,8 @@ export const BUGS = {
 
 const APP_FILE = fileURLToPath(new URL("./app/index.html", import.meta.url));
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
+// Every page the app serves says which revision it is, so a run can tell if any page it loaded has changed since.
+export const REVISION_HEADER = "x-app-revision";
 
 export function applyBug(html, bug) {
   if (!bug) return html;
@@ -55,12 +57,20 @@ export async function startApp({ bug, port = 0 } = {}) {
       res.end("Misdirected request");
       return;
     }
-    const url = new URL(req.url ?? "/", "http://localhost");
+    // A request target the URL parser rejects (for example "//[") is a client error, not a reason for the server to die.
+    let url;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("Bad request");
+      return;
+    }
     const path = url.pathname;
     try {
       if (path === "/") {
-        const { html } = await render({ bug });
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        const { html, revision } = await render({ bug });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", [REVISION_HEADER]: revision });
         res.end(html);
       } else if (path === "/__revision") {
         // ?path=/fixtures/<page> asks for that fixture's revision; no query means the app itself.

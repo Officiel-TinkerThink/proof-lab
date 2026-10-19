@@ -78,7 +78,7 @@ export function createFixtureHandler({ revisionOf }) {
     if (path.startsWith("/fixtures/")) {
       const fixture = await loadFixture(path.slice("/fixtures/".length));
       if (!fixture) return notFound(res);
-      res.writeHead(200, { "Content-Type": fixture.type, ...NO_STORE });
+      res.writeHead(200, { "Content-Type": fixture.type, ...NO_STORE, "X-App-Revision": fixture.revision });
       res.end(fixture.body);
       return true;
     }
@@ -122,7 +122,11 @@ export function createFixtureHandler({ revisionOf }) {
       let location = FALLBACK_REDIRECT;
       try {
         const target = new URL(url.searchParams.get("to") ?? FALLBACK_REDIRECT, base);
-        if (target.origin === base) location = `${target.pathname}${target.search}${target.hash}`;
+        if (target.origin === base) {
+          // "/.//evil.example" parses to the path "//evil.example", which a browser would read as another host,
+          // so the emitted path always starts with exactly one slash.
+          location = `${target.pathname.replace(/^\/+/, "/")}${target.search}${target.hash}`;
+        }
       } catch { /* an unparseable target keeps the fallback */ }
       res.writeHead(302, { Location: location, ...NO_STORE });
       res.end();
