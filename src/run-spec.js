@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactSecrets, scrubRecord, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactHead, redactSecrets, scrubRecord, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
@@ -31,8 +31,8 @@ const MAX_FAILURE_CONTEXTS = 5;
 const MAX_REVISION_RECHECKS = 50;
 const ARIA_CHARS = 8000;
 // Fields that are the run's own bookkeeping, not page or spec text; the scrub at the end of runSpec leaves them alone.
-const RECEIPT_BOOKKEEPING = ["spec", "at", "verdict"];
-const EVIDENCE_BOOKKEEPING = ["type", "spec", "at", "mime", "base64"];
+const RECEIPT_BOOKKEEPING = ["at", "verdict"];
+const EVIDENCE_BOOKKEEPING = ["type", "at", "mime", "base64"];
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
 export const stepLimits = { graceMs: 20000 }; // an object so a test can shorten it
@@ -54,7 +54,7 @@ export function createContext({ page, adopt = page => page, appUrl, specDir, tim
       // every value is scrubbed here, once, before it can reach the receipt or the evidence file.
       // A step that names a credential (a storage key "authToken", a field labelled "Password") never records the value it
       // read or compared: only its length and a keyed fingerprint, as for cookies. The secret-making name is not inside the value.
-      const hide = value => (isSensitiveStep(step) && typeof value !== "boolean" && typeof value !== "number" && value !== null && value !== undefined
+      const hide = value => (isSensitiveStep(step) && typeof value !== "boolean" && value !== null && value !== undefined
         ? `(masked, ${maskValue(value)})` : value);
       const expected = scrubValue(hide(rawExpected));
       const actual = scrubValue(hide(rawActual));
@@ -159,7 +159,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     verdict: "ERROR", app: null, bug: null, spec: null, revision: null, at: fixedStamp(),
     totals: null, checks: [], review: { total: 0, items: [] }, evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
   };
-  const refuse = message => {
+  const refuse = raw => {
+    const message = redactSecrets(raw);
     receipt.error = message;
     receipt.next = [message, "Fix the spec file and run again. Nothing was written."];
     return receipt;
@@ -188,7 +189,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const pageErrors = new Set();
   let pageErrorsDropped = 0;
   const noteError = raw => {
-    const message = redactSecrets(raw);
+    const message = redactHead(raw);
     if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(clipValue(message, 1000));
     else if (!pageErrors.has(clipValue(message, 1000))) pageErrorsDropped += 1;
   };
@@ -224,7 +225,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         onPageError: message => noteError(message),
         onConsole: (level, text) => {
           if (level === "error") noteError(text);
-          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: clipValue(redactSecrets(text), 1000) });
+          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: clipValue(redactHead(text), 1000) });
           else consoleDropped += 1;
         },
         onResponse: response => {
@@ -290,6 +291,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     }
   }
 
+  // Scrub the checks in place first: the receipt's failures, its next steps and the evidence records are all built from them.
+  checks.forEach(check => Object.assign(check, scrubRecord(check)));
   const { totals, failures } = summarize(checks);
   receipt.totals = totals;
   receipt.checks = failures;
@@ -309,11 +312,11 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
 
   // Choke point: the receipt and every evidence record are scrubbed here, once, whichever code path produced the text
   // (a step error, a hint, a review note, a context, a page-supplied revision). Redaction at the sources stays as a second layer.
-  if (receipt.app !== undefined) receipt.app = hideQuery(receipt.app);
+  if (typeof receipt.app === "string") receipt.app = hideQuery(receipt.app);
   for (const key of Object.keys(receipt)) if (!RECEIPT_BOOKKEEPING.includes(key)) receipt[key] = scrubValue(receipt[key]);
 
   const records = [
-    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
+    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
     ...stepRecords,
     ...checks.map(check => ({ type: "check", ...check })),
     ...reviews.map(item => ({ type: "review", ...item })),

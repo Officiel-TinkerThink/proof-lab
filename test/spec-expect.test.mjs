@@ -463,3 +463,55 @@ test("popup: assertions after the popup step read the popup's own address", TIME
   ]));
   assert.equal(receipt.verdict, "PASS", explain(receipt));
 });
+
+test("record: a number read from a credential-named step is masked, a boolean is not", async () => {
+  const { createContext } = await import("../src/run-spec.js");
+  const checks = [];
+  const ctx = createContext({ page: {}, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks });
+  ctx.record({ op: "assertStorage", key: "authToken" }, true, "equals 482913", 482913, undefined);
+  ctx.record({ op: "assertValue", label: "OTP" }, true, "equals x", true, undefined);
+  assert.doesNotMatch(JSON.stringify(checks[0]), /482913/);
+  assert.match(checks[0].actual, /^\(masked, 6 characters, hmac [0-9a-f]{8}\)$/);
+  assert.equal(checks[1].actual, true);
+});
+
+test("scrubValue: a keyed credential field is hidden whole, at any depth, and collapsed keys do not overwrite each other", async () => {
+  const { scrubValue } = await import("../src/spec/evidence.js");
+  const hidden = scrubValue({ password: "hunter2", deep: { list: [{ sessionId: "abc123xyz" }] }, ok: "fine" });
+  assert.doesNotMatch(JSON.stringify(hidden), /hunter2|abc123xyz/);
+  assert.equal(hidden.ok, "fine");
+  const clash = scrubValue({ "token=aaaaaa11": 1, "token=bbbbbb22": 2 });
+  assert.equal(Object.keys(clash).length, 2, "two different keys stay two keys");
+});
+
+test("redactSecrets: short and dotted key names, a long suffix, hex after an underscore; hyphenated names and a port in a path stay", () => {
+  assert.doesNotMatch(redactSecrets("DB_PASS=s3cretvalue"), /s3cretvalue/);
+  assert.doesNotMatch(redactSecrets("db.password: s3cretvalue"), /s3cretvalue/);
+  assert.doesNotMatch(redactSecrets(`${"x".repeat(150)}_token=zzsecret99`), /zzsecret99/);
+  assert.doesNotMatch(redactSecrets("key_0123456789abcdef0123456789abcdef"), /0123456789abcdef0123456789abcdef/);
+  assert.equal(redactSecrets("a well-known-long-hyphenated-name here"), "a well-known-long-hyphenated-name here");
+  assert.equal(redactSecrets("see //host:8080/path@v2 for details"), "see //host:8080/path@v2 for details");
+});
+
+test("redactSecrets: a repeated JWT-like run is linear, and an aria line naming a password is redacted", () => {
+  const started = Date.now();
+  redactSecrets("eyJabcdefgh.".repeat(20000));
+  assert.ok(Date.now() - started < 2000, "a repeated eyJ run must not take quadratic time");
+  assert.doesNotMatch(redactSecrets('- textbox "Password": hunter2'), /hunter2/);
+});
+
+test("assertUrl: a query in what the spec expects is hidden in the label as well", async () => {
+  const { STEPS } = await import("../src/spec/steps.js");
+  const recorded = [];
+  const ctx = { timeoutMs: 100, page: { url: () => "http://127.0.0.1:4173/done" }, record: (...args) => recorded.push(args) };
+  await STEPS.assertUrl(ctx, { op: "assertUrl", contains: "?code=ab12cd34", timeout: 0 });
+  assert.doesNotMatch(JSON.stringify(recorded[0][2]), /ab12cd34/);
+});
+
+test("refuse and the choke point: a spec name that looks like a credential, and an ERROR run with no reachable app, keep the receipt clean", TIMEOUT, async () => {
+  const { runInline } = await import("./spec-helpers.mjs");
+  const receipt = await runInline({ name: "login token=namesecret99", app: { url: "http://127.0.0.1:9" }, steps: [{ op: "assertTitle", equals: "x" }] });
+  assert.doesNotMatch(JSON.stringify(receipt), /namesecret99/);
+  assert.equal(receipt.verdict, "ERROR");
+  assert.ok(receipt.app === null || typeof receipt.app === "string");
+});

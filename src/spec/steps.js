@@ -2,7 +2,7 @@
 // Assertions never throw: they poll, then record a check with the last value read.
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { hideQuery, maskValue, redactSecrets } from "./evidence.js";
+import { hideAddressText, hideQuery, maskValue, redactSecrets } from "./evidence.js";
 import { hasTarget, locate } from "./locate.js";
 import { poll } from "./poll.js";
 import { defined, pick, readPath } from "./util.js";
@@ -61,7 +61,8 @@ async function assertion(ctx, step, expected, evaluate) {
 // show(actual) is what the check records; the match always uses the value as read.
 async function textAssertion(ctx, step, read, show = value => value) {
   const match = matcher(step);
-  await assertion(ctx, step, match.label, async () => {
+  // An address assertion can carry a query or hash in what it expects, so its label is hidden the same way as the actual.
+  await assertion(ctx, step, show === hideQuery ? hideAddressText(String(match.label)) : match.label, async () => {
     const actual = await read();
     return { pass: actual !== null && match.test(actual), actual: actual === null ? null : show(actual) };
   });

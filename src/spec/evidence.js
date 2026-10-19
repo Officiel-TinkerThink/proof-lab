@@ -18,7 +18,7 @@ function clipText(text, limit) {
 // Names that mark a value as a credential. The long ones match inside a longer key (db_password, x-auth-token): the part
 // before the name needs no match, and the part after is bounded, so no input makes the match cost more than linear time.
 // The short ones only as the whole key, so "author" and "bypass" are left alone.
-const KEY = String.raw`(?:(?:password|passwd|passphrase|passcode|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|credentials?|cookie|session(?:[ _-]?id)?)[\w-]{0,40}|\b(?:pass|auth|sid|pw|otp)\b)`;
+const KEY = String.raw`(?:(?:password|passwd|passphrase|passcode|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|credentials?|cookie|session(?:[ _-]?id)?)[\w.-]{0,200}|(?<![A-Za-z])(?:pass|auth|sid|pw|otp)(?![A-Za-z])[\w.-]{0,200})`;
 // The separator can be escaped or url-encoded: password=, "password": , \"password\":, password%3D.
 const KEY_END = String.raw`\\?["']?\s*`;
 const BASE64 = "A-Za-z0-9+/_-";
@@ -26,7 +26,7 @@ const BASE64 = "A-Za-z0-9+/_-";
 const SCHEME_VALUE = String.raw`(?:(?=[\w.~+/=-]*[\d+/=])[\w.~+/=-]{8,}|[\w.~+/=-]{20,})`;
 const SECRET_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted private key]"],
-  [/\beyJ[\w-]{8,}\.[\w-]{8,}(?:\.[\w-]*)?/g, "[redacted jwt]"], // a JWT with no signature is still a JWT
+  [/(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}(?:\.[\w-]*)?/g, "[redacted jwt]"], // a JWT with no signature is still a JWT; starting only at a run's beginning keeps the scan linear
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted access key]"],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}|AIza[\w-]{35})/g, "[redacted token]"],
   [new RegExp(String.raw`\b(Bearer|Basic|Digest|OAuth|Token|ApiKey)\s+${SCHEME_VALUE}`, "gi"), "$1 [redacted]"],
@@ -37,9 +37,11 @@ const SECRET_PATTERNS = [
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*")(?:[^"\\]|\\.)*`, "gi"), "$1$2[redacted]"],
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*')(?:[^'\\]|\\.)*`, "gi"), "$1$2[redacted]"],
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*)[^\s"'&,;\\]+`, "gi"), "$1$2[redacted]"],
-  [/(\/\/[^/\s:@]*:)\S+@/g, "$1[redacted]@"],
-  [/\b[A-Fa-f0-9]{32,}\b/g, "[redacted hex]"],
-  [/\b[A-Za-z0-9+_-]{40,}={0,2}(?![A-Za-z0-9+_-])/g, "[redacted long value]"],
+  [/(\/\/[^/\s:@]*:)(?!\d+(?:[/?#\s]|$))\S+@/g, "$1[redacted]@"], // not "host:4173/@name": a port is not a password
+  [/(?<![A-Fa-f0-9])[A-Fa-f0-9]{32,}(?![A-Fa-f0-9])/g, "[redacted hex]"],
+  // A run of 40 or more token characters that contains a digit. Long hyphenated words and names ("closed-shadow-root-...")
+  // have none and are kept. Starting only where a run begins keeps the scan linear.
+  [/(?<![A-Za-z0-9+_-])(?=[A-Za-z0-9+_-]*\d)[A-Za-z0-9+_-]{40,}={0,2}/g, "[redacted long value]"],
   // Base64 with "/" also looks like a path: it counts as a value only when it mixes digits and both letter cases.
   [new RegExp(`(?<![${BASE64}])(?=[${BASE64}]*\\d)(?=[${BASE64}]*[a-z])(?=[${BASE64}]*[A-Z])[${BASE64}]{40,}={0,2}`, "g"), "[redacted long value]"],
 ];
@@ -59,8 +61,23 @@ export function scrubValue(value, depth = 0) {
     try { return redactSecrets(JSON.stringify(value)); } catch { return "[unreadable value]"; }
   }
   if (Array.isArray(value)) return value.map(item => scrubValue(item, depth + 1));
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [redactSecrets(key), scrubValue(item, depth + 1)]));
+  // An object field is a key and a value that no text pattern sees together: a field named like a credential is masked
+  // whole. Keys are scrubbed too; two keys that collapse to one are kept apart.
+  const out = {};
+  for (const [rawKey, item] of Object.entries(value)) {
+    let key = redactSecrets(rawKey);
+    for (let n = 2; key in out; n += 1) key = `${redactSecrets(rawKey)}#${n}`;
+    out[key] = SENSITIVE_NAME.test(rawKey) && item !== null && typeof item !== "boolean" ? "[redacted]" : scrubValue(item, depth + 1);
+  }
+  return out;
 }
+
+// Text taken from a page or a dialog is cut before it is scanned when it is huge: every recorded text is clipped to
+// far less than this, so a secret cannot straddle the cut that matters.
+export const redactHead = (text, limit = 50_000) => redactSecrets(String(text).slice(0, limit));
+
+// Query and fragment inside spec-authored address text (an expected address, app.start): hidden like a recorded address.
+export const hideAddressText = text => String(text).replace(/\?[^\s"']*/g, "?[query hidden]").replace(/#[^\s"']*/g, "#[hash hidden]");
 
 // The one place that makes "nothing written holds a credential" true by construction: every record that leaves the
 // run (receipt, evidence lines, look output) passes through here, whatever field a new sink puts text in. Fields in
@@ -104,11 +121,13 @@ export function maskValue(value) {
 // values it reads or compares are masked whole, because the name that makes them secret is not inside the value.
 const SENSITIVE_NAME = /password|passwd|passphrase|passcode|\bpwd\b|\bpw\b|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|credential|cookie|session|\botp\b|\bpin\b/i;
 // The names of the data read (key, attribute, property, path) always count; the names of the control count when the step
-// reads the control's value (assertValue), not when it only finds a button called "Show password".
+// reads the control's value (assertValue, or an attribute or property called "value"), not when it only finds a button
+// called "Show password".
 export const isSensitiveStep = step => {
   const named = field => typeof step?.[field] === "string" && SENSITIVE_NAME.test(step[field]);
+  const readsValue = step?.op === "assertValue" || (["assertAttribute", "assertProperty"].includes(step?.op) && (step.attribute ?? step.property) === "value");
   return ["key", "attribute", "property", "path"].some(named)
-    || (step?.op === "assertValue" && ["label", "placeholder", "testId", "selector", "name"].some(named));
+    || (readsValue && ["label", "placeholder", "testId", "selector", "name"].some(named));
 };
 
 // Long strings and large structures are cut in the receipt; the full value stays in the evidence file.

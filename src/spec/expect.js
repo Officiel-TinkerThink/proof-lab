@@ -5,7 +5,7 @@
 // If the action itself fails, no expectation is recorded: the step is already a failed check and the missing event is
 // a consequence, not a second finding.
 import { readFile, stat } from "node:fs/promises";
-import { clipValue, hideQuery, redactSecrets } from "./evidence.js";
+import { clipValue, hideAddressText, hideQuery, redactSecrets } from "./evidence.js";
 import { matcher } from "./steps.js";
 import { bounded, firstLine } from "./util.js";
 
@@ -142,7 +142,7 @@ const ARM = {
         }
         const expected = without({
           popup: "opens",
-          url: block.url === undefined ? undefined : matchOf(block.url).label,
+          url: block.url === undefined ? undefined : hideAddressText(String(matchOf(block.url).label)),
           title: block.title === undefined ? undefined : matchOf(block.title).label,
         });
         if (found === null) return { pass: false, expected, actual: null };
