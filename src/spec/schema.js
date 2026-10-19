@@ -32,12 +32,20 @@ const CLICK_FIELDS = { button: ["left", "right", "middle"], clickCount: "integer
 const RANGES = {
   nth: [0, Infinity], level: [0, Infinity], clickCount: [1, Infinity], delay: [0, Infinity],
   count: [0, Infinity], min: [0, Infinity], max: [0, Infinity], status: [100, 599],
+  width: [1, 10000], height: [1, 10000], latitude: [-90, 90], longitude: [-180, 180], accuracy: [0, Infinity], ms: [0, Infinity],
 };
 
 // Element types for array fields.
 const ITEMS = { frame: "string", byValue: "string", byLabel: "string", byIndex: "integer" };
 
 const FILE_FIELDS = { name: "string", mimeType: "string", text: "string", base64: "string" };
+
+const MEDIA = ["screen", "print"];
+const COLOR_SCHEMES = ["light", "dark", "no-preference"];
+const REDUCED_MOTION = ["reduce", "no-preference"];
+const CLOCK_ACTIONS = ["install", "setFixedTime", "pauseAt", "fastForward", "runFor", "resume"];
+// The permission names Chromium accepts in Playwright's grantPermissions.
+export const PERMISSIONS = ["accelerometer", "ambient-light-sensor", "background-sync", "camera", "clipboard-read", "clipboard-write", "geolocation", "gyroscope", "local-fonts", "magnetometer", "microphone", "midi", "midi-sysex", "notifications", "payment-handler", "storage-access"];
 
 // target: "none" | "optional" | "required". assertion: true adds "not". oneOf: exactly one. anyOf: at least one.
 // forbidden: fields that make no sense for the op. conflicts: pairs that cannot be given together.
@@ -83,9 +91,29 @@ export const OPS = {
   assertTitle: { target: "none", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
   // path reads inside the stored value, so it needs equals: with exists it would be silently ignored.
   assertStorage: { target: "none", assertion: true, fields: { area: ["local", "session"], key: "string", path: "string", equals: "any", exists: "boolean" }, required: ["key"], oneOf: ["equals", "exists"], conflicts: [["exists", "path"]] },
+
+  // Environment: what the visitor's browser looks like. Values that only a new browser context can set (locale, time zone)
+  // belong to the top-level "env" block; these ops change the running page.
+  setViewport: { target: "none", fields: { width: "integer", height: "integer" }, required: ["width", "height"] },
+  emulateMedia: { target: "none", fields: { media: MEDIA, colorScheme: COLOR_SCHEMES, reducedMotion: REDUCED_MOTION }, anyOf: ["media", "colorScheme", "reducedMotion"] },
+  setOffline: { target: "none", fields: { offline: "boolean" }, required: ["offline"] },
+  grantPermissions: { target: "none", fields: { permissions: "array" }, required: ["permissions"] },
+  clearPermissions: { target: "none", fields: {} },
+  setGeolocation: { target: "none", fields: { latitude: "number", longitude: "number", accuracy: "number" }, required: ["latitude", "longitude"] },
+  // "cookie" is the cookie's name: "name" already labels the step.
+  setCookie: { target: "none", fields: { cookie: "string", value: "string", path: "string", httpOnly: "boolean", secure: "boolean", sameSite: ["Strict", "Lax", "None"] }, required: ["cookie", "value"] },
+  clearCookies: { target: "none", fields: { cookie: "string" } },
+  assertCookie: { target: "none", assertion: true, fields: { cookie: "string", path: "string", ...MATCH, exists: "boolean" }, required: ["cookie"], oneOf: [...MATCH_ONE, "exists"] },
+  setStorage: { target: "none", fields: { area: ["local", "session"], key: "string", value: "any" }, required: ["key", "value"] },
+  clearStorage: { target: "none", fields: { area: ["local", "session"], key: "string" } },
+  // install and setFixedTime/pauseAt take a time, fastForward and runFor take milliseconds.
+  clock: { target: "none", fields: { action: CLOCK_ACTIONS, time: "string|number", ms: "number" }, required: ["action"] },
 };
 
-const TOP_LEVEL = { name: "string", app: "object", steps: "array", timeoutMs: "number", noPageErrors: "boolean" };
+// Browser-context settings a spec may fix for the whole run.
+const ENV_FIELDS = { viewport: "object", locale: "string", timezoneId: "string", colorScheme: COLOR_SCHEMES, reducedMotion: REDUCED_MOTION, geolocation: "object", permissions: "array" };
+
+const TOP_LEVEL = { name: "string", app: "object", env: "object", steps: "array", timeoutMs: "number", noPageErrors: "boolean" };
 const APP_FIELDS = { url: "string", bug: "string", start: "string" };
 const MAX_STEPS = 500;
 const MAX_TIMEOUT_MS = 600000;
@@ -187,6 +215,46 @@ function checkFiles(files, label, problems) {
   });
 }
 
+function checkPermissions(permissions, label, problems) {
+  if (permissions.length === 0) problems.push(`${label} must not be an empty list`);
+  permissions.forEach((name, index) => {
+    if (!PERMISSIONS.includes(name)) problems.push(`${label}[${index}] must be one of ${PERMISSIONS.join(", ")}`);
+  });
+}
+
+function checkClock(step, label, problems) {
+  const needsTime = ["setFixedTime", "pauseAt"].includes(step.action);
+  const needsMs = ["fastForward", "runFor"].includes(step.action);
+  if (needsTime && step.time === undefined) problems.push(`${label} (${step.action}) needs "time"`);
+  if (needsMs && step.ms === undefined) problems.push(`${label} (${step.action}) needs "ms"`);
+  if (!needsTime && step.action !== "install" && step.time !== undefined) problems.push(`${label} (${step.action}) cannot use "time"`);
+  if (!needsMs && step.ms !== undefined) problems.push(`${label} (${step.action}) cannot use "ms"`);
+  if (typeof step.time === "string" && Number.isNaN(Date.parse(step.time))) problems.push(`${label}.time is not a date Chromium can read: use an ISO 8601 string such as 2026-01-31T09:00:00Z, or epoch milliseconds`);
+  if (typeof step.time === "number" && !(step.time >= 0)) problems.push(`${label}.time must be 0 or more (epoch milliseconds)`);
+}
+
+// The settings that fix the browser context for the whole run: checked without a browser.
+function checkEnv(env, problems) {
+  checkFields(env, "env", ENV_FIELDS, problems);
+  if (isObject(env.viewport)) {
+    checkFields(env.viewport, "env.viewport", { width: "integer", height: "integer" }, problems);
+    if (env.viewport.width === undefined || env.viewport.height === undefined) problems.push("env.viewport needs width and height");
+    checkRanges(env.viewport, "env.viewport", problems);
+  }
+  if (isObject(env.geolocation)) {
+    checkFields(env.geolocation, "env.geolocation", { latitude: "number", longitude: "number", accuracy: "number" }, problems);
+    if (env.geolocation.latitude === undefined || env.geolocation.longitude === undefined) problems.push("env.geolocation needs latitude and longitude");
+    checkRanges(env.geolocation, "env.geolocation", problems);
+  }
+  if (typeof env.locale === "string") {
+    try { Intl.getCanonicalLocales(env.locale); } catch { problems.push(`env.locale is not a valid locale tag: ${JSON.stringify(env.locale)}`); }
+  }
+  if (typeof env.timezoneId === "string") {
+    try { new Intl.DateTimeFormat("en", { timeZone: env.timezoneId }); } catch { problems.push(`env.timezoneId is not a time zone this runtime knows: ${JSON.stringify(env.timezoneId)}`); }
+  }
+  if (Array.isArray(env.permissions)) checkPermissions(env.permissions, "env.permissions", problems);
+}
+
 function validateStep(step, at) {
   if (!isObject(step)) return [`${at} must be an object`];
   if (typeof step.op !== "string") return [`${at}.op must be a string, one of ${Object.keys(OPS).join(", ")}`];
@@ -239,6 +307,14 @@ function validateStep(step, at) {
   if (step.optional === true && definition.assertion) problems.push(`${label}: an assertion cannot be optional`);
   if (step.op === "press" && typeof step.key === "string" && step.key.trim() === "") problems.push(`${label}.key must not be empty`);
   if (step.op === "goto" && typeof step.url === "string" && step.url.trim() === "") problems.push(`${label}.url must not be empty`);
+  if (Array.isArray(step.permissions)) checkPermissions(step.permissions, `${label}.permissions`, problems);
+  if (step.op === "clock") checkClock(step, label, problems);
+  if (step.op === "setCookie") {
+    if (step.cookie === "") problems.push(`${label}.cookie must not be empty`);
+    if (typeof step.path === "string" && !step.path.startsWith("/")) problems.push(`${label}.path must start with /`);
+    if (step.sameSite === "None" && step.secure !== true) problems.push(`${label}: sameSite None needs secure: true (browsers refuse it otherwise)`);
+  }
+  if (step.op === "assertCookie" && step.cookie === "") problems.push(`${label}.cookie must not be empty`);
   if (step.op === "dragTo" && isObject(step.to)) {
     checkFields(step.to, `${label}.to`, { ...TARGET_FIELDS, name: "string" }, problems);
     checkTarget(step.to, `${label}.to`, { required: true, nested: true }, problems);
@@ -275,6 +351,7 @@ export function validateSpec(spec) {
     problems.push("name must be 1 to 100 characters, with no control characters and no leading or trailing space");
   }
   if (isObject(spec.app)) checkApp(spec.app, problems);
+  if (isObject(spec.env)) checkEnv(spec.env, problems);
   if (typeof spec.timeoutMs === "number" && !(spec.timeoutMs >= 1 && spec.timeoutMs <= MAX_TIMEOUT_MS)) {
     problems.push(`timeoutMs must be from 1 to ${MAX_TIMEOUT_MS}`);
   }

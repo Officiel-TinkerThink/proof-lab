@@ -184,6 +184,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     const session = await openSession({
       firstUrl,
       timeoutMs,
+      env: spec.env,
       hooks: {
         onLaunch: version => { browserVersion = version; },
         onPageError: message => noteError(message),
@@ -271,7 +272,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   }
 
   const records = [
-    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion },
+    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
     ...stepRecords,
     ...checks.map(check => ({ type: "check", ...check })),
     ...reviews.map(item => ({ type: "review", ...item })),

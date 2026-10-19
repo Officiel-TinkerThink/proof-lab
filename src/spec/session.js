@@ -5,16 +5,26 @@ import { environmentWithoutKey } from "../chain.js";
 
 const MIN_NAVIGATION_TIMEOUT_MS = 10000;
 
+// The spec's "env" block as Playwright context options. Only what the schema allows gets here; absent means the browser default.
+export function contextOptionsOf(env) {
+  if (!env) return {};
+  const { viewport, locale, timezoneId, colorScheme, reducedMotion, geolocation, permissions } = env;
+  return Object.fromEntries(Object.entries({
+    viewport, locale, timezoneId, colorScheme, reducedMotion, permissions,
+    geolocation: geolocation === undefined ? undefined : { accuracy: 0, ...geolocation },
+  }).filter(([, value]) => value !== undefined));
+}
+
 // hooks: onLaunch(browserVersion), onPageError(message), onConsole(level, text), onResponse(response), onRequestFailed(request), all optional.
 // Returns { browser, page, browserVersion, close }. close() never throws. Navigation to firstUrl is part of opening:
 // if it fails the browser is closed again and the error is thrown.
-export async function openSession({ firstUrl, timeoutMs, hooks = {} }) {
+export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
   const browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
   const close = () => browser.close().catch(() => {});
   const browserVersion = `chromium ${browser.version()}`;
   hooks.onLaunch?.(browserVersion); // before the first navigation, so a run that fails there still records its browser
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext(contextOptionsOf(env));
     const page = await context.newPage();
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(Math.max(timeoutMs, MIN_NAVIGATION_TIMEOUT_MS));

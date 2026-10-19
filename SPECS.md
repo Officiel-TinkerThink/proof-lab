@@ -63,6 +63,7 @@ An app exposes its revision with `<meta name="app-revision" content="<12 hex cha
 | `app.url` | An http(s) app to test. Without it the built-in app starts on a free port. |
 | `app.bug` | Inject a known defect into the built-in app (`no-persist`, `lost-confirmation`). Not with `app.url`. |
 | `app.start` | Path to open first (default `/`). One leading `/`. Built-in fixture pages are under `/fixtures/`. |
+| `env` | The visitor's browser, fixed for the whole run: `viewport {width, height}`, `locale` (`de-DE`), `timezoneId` (`Asia/Tokyo`), `colorScheme` (`light` `dark` `no-preference`), `reducedMotion` (`reduce` `no-preference`), `geolocation {latitude, longitude, accuracy?}`, `permissions` (a list: `geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, `clipboard-write`, ...). Recorded in the evidence `run` record. There is no `offline` here: a run that starts offline cannot load its page; use the `setOffline` step. Geolocation is only readable by the page when `permissions` also lists `geolocation`. |
 | `timeoutMs` | Default budget per step, ms (default 3000, at most 600000). |
 | `noPageErrors` | Adds a final check: no uncaught exception and no `console.error` during the run. |
 | `steps` | 1 to 500 steps. The spec must contain an assertion (`assert*`, a `goto` with `status`) or `noPageErrors`, or it would prove nothing. |
@@ -102,7 +103,7 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
-### Operations (35)
+### Operations (47)
 
 | Op | Fields | Notes |
 |---|---|---|
@@ -132,6 +133,17 @@ unless `nth` is given. `assertCount` counts all matches.
 | `assertCount` | target, `count` or `min`/`max` | No `nth`. |
 | `assertUrl` `assertTitle` | `equals` or `contains` or `matches` | |
 | `assertStorage` | `area?` (`local` default, `session`), `key`, `path?`, one of `equals` `exists` | The value is parsed as JSON when it can be; `path` is dotted. Objects compare by content. |
+| `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. For an **httpOnly** cookie the receipt records only its length, never the value (it is usually a session token). `exists: false` = absent. |
+| `setViewport` | `width`, `height` | Resizes the running page (1 to 10000). Fires `resize`. |
+| `emulateMedia` | one or more of `media` (`screen` `print`), `colorScheme`, `reducedMotion` | Changes the running page; `matchMedia` listeners fire. |
+| `setOffline` | `offline` | Cuts (or restores) the network of the whole browser context until a later `setOffline`. |
+| `grantPermissions` `clearPermissions` | `permissions` (grant only) | For the app's origin. Without a grant a permission prompt is denied in the headless browser. |
+| `setGeolocation` | `latitude`, `longitude`, `accuracy?` | Needs the `geolocation` permission to be readable by the page. |
+| `setCookie` | `cookie`, `value`, `path?` (default `/`), `httpOnly?`, `secure?`, `sameSite?` | For the app's host. `sameSite: None` needs `secure: true`. |
+| `clearCookies` | `cookie?` | One cookie by name, or all. |
+| `setStorage` | `area?`, `key`, `value` | A non-string value is stored as JSON, the form `assertStorage` reads back. The page must already be on the app (about:blank has no storage). |
+| `clearStorage` | `area?`, `key?` | One key, or the whole area. |
+| `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string or epoch ms), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
 
 `matches` is a regular expression; `flags` may use `i m s u v` (not `g` or `y`).
 
@@ -222,7 +234,8 @@ Pages (`/fixtures/<name>.html`): `forms` (every input type, validation, submit, 
 hover, keys, focus order, drag, scroll), `timing` (delays, debounce, lazy elements), `nav` and `nav-b` (links, history,
 hash and query routes, popups), `frames` (iframes, open and closed shadow DOM), `dialogs` (alert, confirm, prompt,
 download, file input, clipboard, geolocation, notifications), `storage` (cookies, local/session storage, IndexedDB,
-locale, time zone, colour scheme), `network` (fetch, slow, failing, console and page errors), `a11y` and `a11y-bad`.
+locale, time zone, colour scheme), `env` (viewport, colour scheme, reduced motion, print media, locale, number format,
+time zone, online state, geolocation, a fetch to try offline, current time, a 5 s timer), `network` (fetch, slow, failing, console and page errors), `a11y` and `a11y-bad`.
 
 Endpoints: `/api/items`, `/api/echo`, `/api/slow?ms=`, `/api/status/<code>`, `/api/redirect?to=`, `/api/cookie?value=`,
 `/api/count` (POST needs the `X-Proof-Lab` header), `/download/hello.txt`, `/__revision[?path=/fixtures/<page>]`.
@@ -233,5 +246,6 @@ Endpoints: `/api/items`, `/api/echo`, `/api/slow?ms=`, `/api/status/<code>`, `/a
 - A closed shadow root cannot be reached by any locator.
 - `back` and `forward` cannot tell "no history" from a same-document move; assert the URL.
 - `assertText` reads rendered text. `assertAttribute` or `assertProperty` read the source value.
-- Not yet covered: dialogs, downloads, popups and tabs as step expectations, network mocking, viewport and locale
-  emulation, accessibility audits, and visual comparison. See the roadmap in the commit history.
+- Not yet covered: dialogs, downloads, popups and tabs as step expectations, network mocking, accessibility audits,
+  and visual comparison. See the roadmap in the commit history.
+- Locale and time zone are fixed per run (`env`), not changed mid-run: they need a new browser context.

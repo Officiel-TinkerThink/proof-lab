@@ -126,6 +126,7 @@ export async function look({ url, specPath, until, screenshotPath }) {
     session = await openSession({
       firstUrl,
       timeoutMs: spec?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      env: spec?.env,
       hooks: {
         onConsole: (level, text) => { if (consoleRecords.length < MAX_CONSOLE) consoleRecords.push({ level, text: clipValue(text, 300) }); },
         onPageError: message => { if (pageErrors.length < MAX_PAGE_ERRORS) pageErrors.push(clipValue(message, 300)); },

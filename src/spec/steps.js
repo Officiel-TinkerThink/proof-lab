@@ -254,4 +254,57 @@ export const STEPS = {
       return { pass: isDeepStrictEqual(actual, step.equals), actual };
     });
   },
+  // An httpOnly cookie is usually a session token: the receipt records how long it is, never the value.
+  async assertCookie(ctx, step) {
+    const context = ctx.page.context();
+    await assertion(ctx, step, step.exists !== undefined ? { exists: step.exists } : matcher(step).label, async () => {
+      const found = (await context.cookies()).find(cookie => cookie.name === step.cookie && (step.path === undefined || cookie.path === step.path));
+      if (step.exists !== undefined) return { pass: (found !== undefined) === step.exists, actual: found !== undefined };
+      if (!found) return { pass: false, actual: null };
+      return {
+        pass: matcher(step).test(found.value),
+        actual: found.httpOnly ? `(httpOnly cookie, ${found.value.length} characters)` : found.value,
+      };
+    });
+  },
+
+  // Environment
+  async setViewport(ctx, step) { await ctx.page.setViewportSize({ width: step.width, height: step.height }); },
+  async emulateMedia(ctx, step) { await ctx.page.emulateMedia(pick(step, ["media", "colorScheme", "reducedMotion"])); },
+  // Offline holds until a later setOffline says otherwise; it applies to the whole browser context.
+  async setOffline(ctx, step) { await ctx.page.context().setOffline(step.offline); },
+  async grantPermissions(ctx, step) {
+    await ctx.page.context().grantPermissions(step.permissions, { origin: new URL(ctx.appUrl).origin });
+  },
+  async clearPermissions(ctx) { await ctx.page.context().clearPermissions(); },
+  async setGeolocation(ctx, step) {
+    await ctx.page.context().setGeolocation({ latitude: step.latitude, longitude: step.longitude, accuracy: step.accuracy ?? 0 });
+  },
+  async setCookie(ctx, step) {
+    await ctx.page.context().addCookies([{
+      ...pick(step, ["value", "httpOnly", "secure", "sameSite"]),
+      name: step.cookie, domain: new URL(ctx.appUrl).hostname, path: step.path ?? "/",
+    }]);
+  },
+  async clearCookies(ctx, step) {
+    await ctx.page.context().clearCookies(step.cookie === undefined ? undefined : { name: step.cookie });
+  },
+  // A value that is not a string is stored as JSON, the form assertStorage reads back.
+  async setStorage(ctx, step) {
+    const text = typeof step.value === "string" ? step.value : JSON.stringify(step.value);
+    await ctx.page.evaluate(([name, key, value]) => window[name].setItem(key, value), [`${step.area ?? "local"}Storage`, step.key, text]);
+  },
+  async clearStorage(ctx, step) {
+    await ctx.page.evaluate(([name, key]) => (key === null ? window[name].clear() : window[name].removeItem(key)), [`${step.area ?? "local"}Storage`, step.key ?? null]);
+  },
+  async clock(ctx, step) {
+    const clock = ctx.page.clock;
+    const time = typeof step.time === "string" ? new Date(step.time) : step.time;
+    if (step.action === "install") await clock.install(time === undefined ? undefined : { time });
+    else if (step.action === "setFixedTime") await clock.setFixedTime(time);
+    else if (step.action === "pauseAt") await clock.pauseAt(time);
+    else if (step.action === "fastForward") await clock.fastForward(step.ms);
+    else if (step.action === "runFor") await clock.runFor(step.ms);
+    else await clock.resume();
+  },
 };
