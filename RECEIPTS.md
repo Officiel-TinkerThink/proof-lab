@@ -74,7 +74,10 @@ Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a drive
   file itself is flushed before the rename. This is recorded as a residual risk.
 - **Power loss at the host.** Not tested. The guest-level power-cut test below covers the guest's flush path. A host-level
   attempt on 2026-10-19 used dm-flakey under ext4 in WSL: its self-test passed, but the no-flush control also passed, so
-  the harness does not yet separate durable from non-durable writes and its baseline result is not evidence. The WSL
+  the harness does not separate durable from non-durable writes, so its baseline result is not evidence. Diagnosis: the
+  table swap that sets the cut (`dmsetup resume`) coincides with the dirty page cache being written to the device, so the
+  unflushed receipts reach the disk before the cut takes effect. Dropped writes were confirmed for fsynced data (0 of 50
+  survived). A discriminating test needs a flush-aware record-and-replay device (dm-log-writes), not a table swap. The WSL
   changes were reverted. Run a discriminating host-level test before any validation use.
 - **Windows read-only attribute.** Only the write bit maps to the read-only attribute on Windows, so 0444 does not stop the
   file's owner. The code clears the flag before it removes a file it wrote (`discard`), and does not rely on the Node
@@ -86,6 +89,8 @@ Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a drive
 
 ## Open items for the QMS owner
 
-- Anchor store owner and location (see Chain).
-- Calendar rotation interval: not set. NIST SP 800-57 Part 1 Rev. 5, Table 1 (p. 45), row 3 "Symmetric Authentication Key":
-  originator-usage period < 2 years; recipient-usage period < OUP + 3 years. The interval is the QMS owner's, within that limit.
+- Anchor store owner and location (see Chain). Proposed, pending QMS owner acceptance: an append-only anchor, one line per
+  run (sequence, head hash, time), written by the CI runner under a credential the operator cannot use, in a store QA owns.
+  Placing it is an infrastructure choice the owner makes.
+- Calendar rotation interval. Proposed, pending QMS owner acceptance: 12 months. NIST SP 800-57 Part 1 Rev. 5, Table 1 (p. 45),
+  row 3 "Symmetric Authentication Key": originator-usage period < 2 years; recipient-usage period < OUP + 3 years.
