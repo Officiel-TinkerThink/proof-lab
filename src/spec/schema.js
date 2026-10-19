@@ -222,6 +222,8 @@ function checkPermissions(permissions, label, problems) {
   });
 }
 
+const CLOCK_TIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}))?$/;
+
 function checkClock(step, label, problems) {
   const needsTime = ["setFixedTime", "pauseAt"].includes(step.action);
   const needsMs = ["fastForward", "runFor"].includes(step.action);
@@ -229,7 +231,9 @@ function checkClock(step, label, problems) {
   if (needsMs && step.ms === undefined) problems.push(`${label} (${step.action}) needs "ms"`);
   if (!needsTime && step.action !== "install" && step.time !== undefined) problems.push(`${label} (${step.action}) cannot use "time"`);
   if (!needsMs && step.ms !== undefined) problems.push(`${label} (${step.action}) cannot use "ms"`);
-  if (typeof step.time === "string" && Number.isNaN(Date.parse(step.time))) problems.push(`${label}.time is not a date Chromium can read: use an ISO 8601 string such as 2026-01-31T09:00:00Z, or epoch milliseconds`);
+  // A date-time without an offset is read in the time zone of the machine running the spec, so the same spec would set
+  // different instants on different hosts: the offset (Z or +hh:mm) is required, and a bare date is UTC midnight.
+  if (typeof step.time === "string" && !(CLOCK_TIME.test(step.time) && !Number.isNaN(Date.parse(step.time)))) problems.push(`${label}.time is not a date with an explicit offset: use an ISO 8601 string such as 2026-01-31T09:00:00Z or 2026-01-31T09:00:00+02:00, a date such as 2026-01-31 (UTC midnight), or epoch milliseconds`);
   if (typeof step.time === "number" && !(step.time >= 0)) problems.push(`${label}.time must be 0 or more (epoch milliseconds)`);
 }
 
@@ -314,7 +318,7 @@ function validateStep(step, at) {
     if (typeof step.path === "string" && !step.path.startsWith("/")) problems.push(`${label}.path must start with /`);
     if (step.sameSite === "None" && step.secure !== true) problems.push(`${label}: sameSite None needs secure: true (browsers refuse it otherwise)`);
   }
-  if (step.op === "assertCookie" && step.cookie === "") problems.push(`${label}.cookie must not be empty`);
+  if ((step.op === "assertCookie" || step.op === "clearCookies") && step.cookie === "") problems.push(`${label}.cookie must not be empty`);
   if (step.op === "dragTo" && isObject(step.to)) {
     checkFields(step.to, `${label}.to`, { ...TARGET_FIELDS, name: "string" }, problems);
     checkTarget(step.to, `${label}.to`, { required: true, nested: true }, problems);

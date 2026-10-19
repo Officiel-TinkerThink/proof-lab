@@ -25,14 +25,14 @@ const reader = (ctx, step) => (step.nth === undefined ? locate(ctx.page, step).f
 
 // equals | contains | matches, as a test function and a readable label.
 function matcher(step) {
-  if (step.equals !== undefined) return { test: value => value === step.equals, label: step.equals };
+  if (step.equals !== undefined) return { test: value => value === step.equals, label: step.equals, kind: "equals", value: step.equals };
   if (step.contains !== undefined) {
-    return { test: value => typeof value === "string" && value.includes(step.contains), label: `contains ${JSON.stringify(step.contains)}` };
+    return { test: value => typeof value === "string" && value.includes(step.contains), label: `contains ${JSON.stringify(step.contains)}`, kind: "contains", value: step.contains };
   }
   // g and y are rejected by the schema; they are also dropped here, because a RegExp that remembers lastIndex
   // would give different answers on repeated reads of the same text.
   const pattern = new RegExp(step.matches, (step.flags ?? "").replace(/[gy]/g, ""));
-  return { test: value => typeof value === "string" && pattern.test(value), label: `matches ${pattern}` };
+  return { test: value => typeof value === "string" && pattern.test(value), label: `matches ${pattern}`, kind: "matches", value: step.matches };
 }
 
 // A content assertion on an element that is not there is a failure, with or without "not": otherwise a typo in a
@@ -257,12 +257,17 @@ export const STEPS = {
   // An httpOnly cookie is usually a session token: the receipt records how long it is, never the value.
   async assertCookie(ctx, step) {
     const context = ctx.page.context();
-    await assertion(ctx, step, step.exists !== undefined ? { exists: step.exists } : matcher(step).label, async () => {
+    const match = step.exists === undefined ? matcher(step) : null;
+    // A cookie value is often a session token, and whether it is httpOnly is known only after reading it: the receipt
+    // never carries the expected value, only how it is compared and its length.
+    const expected = match === null ? { exists: step.exists } : `${match.kind} (${String(match.value).length} characters)`;
+    await assertion(ctx, step, expected, async () => {
       const found = (await context.cookies()).find(cookie => cookie.name === step.cookie && (step.path === undefined || cookie.path === step.path));
-      if (step.exists !== undefined) return { pass: (found !== undefined) === step.exists, actual: found !== undefined };
-      if (!found) return { pass: false, actual: null };
+      if (match === null) return { pass: (found !== undefined) === step.exists, actual: found !== undefined };
+      // Like a missing element: a typo in the cookie name must fail with or without "not", so it is a failed read.
+      if (!found) throw new Error("cookie not found");
       return {
-        pass: matcher(step).test(found.value),
+        pass: match.test(found.value),
         actual: found.httpOnly ? `(httpOnly cookie, ${found.value.length} characters)` : found.value,
       };
     });

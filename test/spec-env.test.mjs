@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { validateSpec } from "../src/run-spec.js";
 import { contextOptionsOf } from "../src/spec/session.js";
-import { TIMEOUT, explain, failedChecks, page, runInline } from "./spec-helpers.mjs";
+import { TIMEOUT, explain, failedChecks, page, runInline, withRun } from "./spec-helpers.mjs";
 
 const ENV_PAGE = "/fixtures/env.html";
 const text = (testId, equals) => ({ op: "assertText", testId, equals });
@@ -44,13 +46,18 @@ test("validateSpec: the environment ops need what they act on and nothing they w
   assert.match(problems({ op: "setCookie", cookie: "a", value: "b", sameSite: "None" }), /sameSite None needs secure/);
   assert.match(problems({ op: "assertCookie", cookie: "a" }), /needs exactly one of equals, contains, matches, exists/);
   assert.match(problems({ op: "assertCookie", cookie: "a", equals: "b", exists: true }), /needs exactly one of/);
+  assert.match(problems({ op: "clearCookies", cookie: "" }), /cookie must not be empty/);
   assert.match(problems({ op: "setStorage", key: "k" }), /needs "value"/);
   assert.match(problems({ op: "clock" }), /needs "action"/);
   assert.match(problems({ op: "clock", action: "setFixedTime" }), /needs "time"/);
   assert.match(problems({ op: "clock", action: "fastForward" }), /needs "ms"/);
   assert.match(problems({ op: "clock", action: "fastForward", ms: 5, time: 1 }), /cannot use "time"/);
   assert.match(problems({ op: "clock", action: "resume", ms: 5 }), /cannot use "ms"/);
-  assert.match(problems({ op: "clock", action: "setFixedTime", time: "yesterday" }), /not a date Chromium can read/);
+  assert.match(problems({ op: "clock", action: "setFixedTime", time: "yesterday" }), /not a date with an explicit offset/);
+  assert.match(problems({ op: "clock", action: "setFixedTime", time: "2030-06-15T12:00:00" }), /not a date with an explicit offset/, "no offset means the runner's own time zone");
+  assert.match(problems({ op: "clock", action: "setFixedTime", time: "2030-13-45T12:00:00Z" }), /not a date with an explicit offset/);
+  assert.equal(problems({ op: "clock", action: "setFixedTime", time: "2030-06-15T12:00:00+02:00" }), "");
+  assert.equal(problems({ op: "clock", action: "setFixedTime", time: "2030-06-15" }), "");
   assert.equal(problems({ op: "clock", action: "setFixedTime", time: "2030-06-15T12:00:00Z" }), "");
   assert.equal(problems({ op: "clock", action: "install" }), "");
 });
@@ -138,18 +145,45 @@ test("cookies: set, assert, clear; an httpOnly value is never written to the rec
     { op: "clearCookies", cookie: "visit" },
     { op: "assertCookie", cookie: "visit", exists: false },
   ]));
-  // The fixture server sets spec_cookie=<value> as httpOnly.
-  const receipt = await runInline(page(ENV_PAGE, [
+  // The fixture server sets spec_cookie=<value> as httpOnly. The spec holds the secret as its expected value in three
+  // forms, passing and failing, with and without "not": none may reach the receipt or the evidence file.
+  await withRun(page(ENV_PAGE, [
     { op: "goto", url: "/api/cookie?value=hunter2" },
     { op: "assertCookie", cookie: "spec_cookie", exists: true },
     { op: "assertCookie", cookie: "spec_cookie", equals: "hunter2" },
     { op: "assertCookie", cookie: "spec_cookie", equals: "wrong" },
-  ]));
-  assert.equal(receipt.verdict, "FAIL");
-  const failed = failedChecks(receipt);
-  assert.deepEqual(failed.map(check => check.step), [4], explain(receipt));
-  assert.equal(failed[0].actual, "(httpOnly cookie, 7 characters)");
-  assert.doesNotMatch(JSON.stringify(receipt), /hunter2/, "the secret value is in no part of the receipt, expected side excepted");
+    { op: "assertCookie", cookie: "spec_cookie", equals: "hunter2", not: true },
+    { op: "assertCookie", cookie: "spec_cookie", contains: "hunt", not: true },
+    { op: "assertCookie", cookie: "spec_cookie", matches: "^hunter", not: true },
+    { op: "assertCookie", cookie: "no_such_cookie", equals: "x", not: true },
+  ]), async (receipt, receiptsDir) => {
+    assert.equal(receipt.verdict, "FAIL");
+    const failed = failedChecks(receipt);
+    assert.deepEqual(failed.map(check => check.step), [4, 5, 6, 7, 8], explain(receipt));
+    assert.equal(failed[0].actual, "(httpOnly cookie, 7 characters)");
+    assert.equal(failed[0].expected, "equals (5 characters)");
+    assert.equal(failed[4].error, "cookie not found", "a missing cookie fails also with not");
+    // The evidence file also holds the page's own url and text (this fixture endpoint prints the value it sets), which is
+    // the app's data and not the spec's: only the records that carry the spec's expectations are scanned.
+    const secret = /hunter2|hunt\b|\^hunter/;
+    let scanned = 0;
+    for (const entry of await readdir(receiptsDir, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const content = await readFile(join(entry.parentPath, entry.name), "utf8");
+      if (!entry.name.endsWith(".evidence.jsonl")) {
+        assert.doesNotMatch(content, secret, `${entry.name} holds the secret value or part of it`);
+        scanned++;
+        continue;
+      }
+      for (const line of content.split("\n").filter(Boolean)) {
+        const record = JSON.parse(line);
+        if (record.type === "context" || record.type === "screenshot") continue;
+        assert.doesNotMatch(line, secret, `an evidence ${record.type} record holds the secret value or part of it`);
+        scanned++;
+      }
+    }
+    assert.ok(scanned > 8, "the receipt and the evidence records were scanned");
+  });
 });
 
 test("storage: setStorage stores objects as JSON, clearStorage removes one key or the area", TIMEOUT, async () => {

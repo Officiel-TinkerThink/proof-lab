@@ -133,7 +133,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `assertCount` | target, `count` or `min`/`max` | No `nth`. |
 | `assertUrl` `assertTitle` | `equals` or `contains` or `matches` | |
 | `assertStorage` | `area?` (`local` default, `session`), `key`, `path?`, one of `equals` `exists` | The value is parsed as JSON when it can be; `path` is dotted. Objects compare by content. |
-| `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. For an **httpOnly** cookie the receipt records only its length, never the value (it is usually a session token). `exists: false` = absent. |
+| `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. A cookie value is usually a session token: the check records the expected side only as how it is compared and its length (`equals (7 characters)`), and for an **httpOnly** cookie the actual side only as its length, never a value. A cookie that is not there fails, also with `not`; use `exists: false` to expect absence. |
 | `setViewport` | `width`, `height` | Resizes the running page (1 to 10000). Fires `resize`. |
 | `emulateMedia` | one or more of `media` (`screen` `print`), `colorScheme`, `reducedMotion` | Changes the running page; `matchMedia` listeners fire. |
 | `setOffline` | `offline` | Cuts (or restores) the network of the whole browser context until a later `setOffline`. |
@@ -143,7 +143,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `clearCookies` | `cookie?` | One cookie by name, or all. |
 | `setStorage` | `area?`, `key`, `value` | A non-string value is stored as JSON, the form `assertStorage` reads back. The page must already be on the app (about:blank has no storage). |
 | `clearStorage` | `area?`, `key?` | One key, or the whole area. |
-| `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string or epoch ms), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
+| `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string with an offset such as `2030-06-15T12:00:00Z` or `+02:00`, a bare date = UTC midnight, or epoch ms; a time without an offset is rejected because it would depend on the runner's time zone), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
 
 `matches` is a regular expression; `flags` may use `i m s u v` (not `g` or `y`).
 
