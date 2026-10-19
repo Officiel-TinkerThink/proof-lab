@@ -18,39 +18,55 @@ function clipText(text, limit) {
 // Names that mark a value as a credential. The long ones match inside a longer key (db_password, x-auth-token): the part
 // before the name needs no match, and the part after is bounded, so no input makes the match cost more than linear time.
 // The short ones only as the whole key, so "author" and "bypass" are left alone.
-const KEY = String.raw`(?:(?:password|passwd|passphrase|passcode|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|credentials?|cookie|session(?:[ _-]?id)?)[\w.-]{0,200}|(?:(?<![A-Za-z])(?:pass|auth|sid|pw|otp|pin)(?![A-Za-z])|(?-i:(?<=[a-z0-9])(?:Pass|Auth|Sid|Pw|Otp|Pin)(?![a-z])|(?<![A-Za-z])(?:pass|auth|sid|pw|otp|pin)(?=[A-Z])))[\w.-]{0,200})`;
+const KEY = String.raw`(?:(?:password|passwd|passphrase|passcode|pwd|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|credentials?|cookie|session(?:[ _-]?id)?)[\w.-]{0,200}|(?:(?<![A-Za-z])(?:pass|auth|sid|pw|otp|pin)(?![A-Za-z])|(?-i:(?<=[A-Za-z0-9])(?:Pass|Auth|Sid|Pw|Otp|Pin)(?![a-z]))|(?-i:(?<=[a-z0-9])(?:PASS|AUTH|SID|PW|OTP|PIN)(?![A-Za-z]))|(?-i:(?<![A-Za-z])(?:pass|auth|sid|pw|otp|pin)(?=[A-Z])))[\w.-]{0,200})`;
 // (the last two alternatives read camelCase: "dbPass", "authHeader"; "bypass" and "Passage" stay)
 // The separator can be escaped or url-encoded: password=, "password": , \"password\":, password%3D.
 // Blanks stop at a line break: a key at the end of a line ("Cookies":) must not take the next line as its value.
 const SP = String.raw`[^\S\r\n]*`;
-const KEY_END = String.raw`\\?["']?${SP}`;
+// A quote written as an HTML entity (&quot; &#34; &#x22; &#39; &#x27; &apos;): page text often holds escaped JSON.
+const ENTITY_QUOTE = String.raw`&(?:quot|#34|#x22|#39|#x27|apos);`;
+const KEY_END = String.raw`(?:\\?["']|${ENTITY_QUOTE})?${SP}`;
 const BASE64 = "A-Za-z0-9+/_-";
 // "Basic validation" is prose; "Basic dXNlcjpwYXNz" is not: a scheme value needs a digit, + / = or at least 20 characters.
 const SCHEME_VALUE = String.raw`(?:(?=[\w.~+/=-]*[\d+/=])[\w.~+/=-]{8,}|[\w.~+/=-]{20,})`;
+const URL_START = /\bhttps?:(?:\\?\/){2}/i;
+// A token that holds an http(s) address: its first "?" and its first "#" (after the host start) hide everything behind them.
+function hideUrlParts(token) {
+  const found = URL_START.exec(token);
+  if (found === null) return token;
+  const from = found.index + found[0].length;
+  const query = token.indexOf("?", from);
+  const hash = token.indexOf("#", from);
+  // "#/route?code=x": the query belongs to the fragment, so one fragment marker covers both.
+  if (hash !== -1 && (query === -1 || hash < query)) return `${token.slice(0, hash)}#[hash hidden]`;
+  if (query === -1) return token;
+  return `${token.slice(0, query)}?[query hidden]${hash === -1 ? "" : "#[hash hidden]"}`;
+}
 const SECRET_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted private key]"],
   // A JWT with no signature is still a JWT. It may follow a hyphen ("auth-eyJ..."), not a letter, digit or underscore; each
   // part is bounded, so a long run of "eyJ" starts costs at most a bounded scan each.
   // Only the header is bounded: a payload or signature is a run with no dot, so a second start cannot sit inside it.
-  [/(?<![A-Za-z0-9_])eyJ[\w-]{8,1000}\.[\w-]{8,}(?:\.[\w-]*)?/g, "[redacted jwt]"],
+  [/(?<![A-Za-z0-9_])eyJ[\w-]{8,997}\.[\w-]+(?:\.[\w-]*)?/g, "[redacted jwt]"],
   // A password in a URL's userinfo goes first: it may itself contain a "?" or "#" that the address rules below would cut at.
   // Bounded, so many "//x:" starts in one long run cost a bounded scan each. Not "host:4173/@name": a port is not a password.
-  [/(\/\/[^/\s:@]*:)(?!\d+(?:[/?#\s]|$))\S{1,2000}@/g, "$1[redacted]@"],
+  [/((?:\\?\/){2}[^/\s:@]*:)(?!\d+(?:[/?#\s]|$))\S{1,2000}@/g, "$1[redacted]@"],
   // A query or fragment in an address inside free text (an error that quotes the URL it failed on) is hidden like a
   // recorded address; a query after a "#/route" counts too. The part before it is bounded for the same reason.
-  [/(\bhttps?:\/\/[^\s?"'<>]{0,4000})\?(?!\[query hidden\])[^\s"'<>]*/gi, "$1?[query hidden]"],
-  [/(\bhttps?:\/\/[^\s#"'<>]{0,4000})#(?!\[hash hidden\])(?:\[query hidden\]|[^\s"'<>])*/gi, "$1#[hash hidden]"],
+  // Token by token (a token ends at a blank, a quote or a bracket), so an address of any length costs one pass; a marker
+  // that is already there is part of the token, which keeps the rule idempotent and still hides what follows the marker.
+  [/(?:\[query hidden\]|\[hash hidden\]|[^\s"'<>])+/g, hideUrlParts],
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted access key]"],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}|AIza[\w-]{35})/g, "[redacted token]"],
   [new RegExp(String.raw`\b(Bearer|Basic|Digest|OAuth|Token|ApiKey)\s+${SCHEME_VALUE}`, "gi"), "$1 [redacted]"],
   // "key: value" with an unquoted value takes the rest of the line: a passphrase or "ApiKey 123" has spaces in it.
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?::|%3[Aa])${SP})[^\s\\"'][^\r\n]*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?::|%3[Aa])${SP})(?!${ENTITY_QUOTE})[^\s\\"'][^\r\n]*`, "gi"), "$1$2[redacted]"],
   // A key at the end of a line with its value indented on the next line (YAML style). A quoted key ("Cookies":) and a list
   // item below it ("- button ...", an aria tree) are not a value.
-  [new RegExp(String.raw`(${KEY})(:${SP}\r?\n[^\S\r\n]+)(?!- )[^\r\n]+`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(:${SP}\r?\n(?![^\S\r\n]*- )[^\S\r\n]+)[^\r\n]+`, "gi"), "$1$2[redacted]"],
   // The same key and value HTML-escaped: password=&quot;x&quot; or &#34;x&#34;.
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}&(?:quot|#34|#x22);)(?:(?!&(?:quot|#34|#x22);).)*`, "gi"), "$1$2[redacted]"],
-  // A quoted value of any length keeps its quotes (an escaped quote does not end it); "key=value" runs up to the next space.
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}${ENTITY_QUOTE})(?:(?!${ENTITY_QUOTE})[\s\S])*`, "gi"), "$1$2[redacted]"],
+  // A quoted value of any length keeps its quotes (an escaped quote does not end it); "key=value" with an unquoted value ends at the next blank, "&", "," or ";" (a passphrase with spaces needs quotes).
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}\\")(?:[^\\]|\\(?!"))*`, "gi"), "$1$2[redacted]"], // value inside \"...\" (JSON inside a string)
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}")(?:[^"\\]|\\.)*`, "gi"), "$1$2[redacted]"],
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}')(?:[^'\\]|\\.)*`, "gi"), "$1$2[redacted]"],
@@ -118,7 +134,8 @@ function maskLeaves(item, depth = 0) {
 const SCAN_CHARS = 50_000;
 export const redactClip = (text, limit) => {
   const whole = String(text);
-  if (whole.length <= limit) return clipValue(redactSecrets(whole), limit);
+  // A text that fits is kept whole after redaction: the placeholders can make it longer, but nothing of the original is dropped.
+  if (whole.length <= limit) return redactSecrets(whole);
   return `${redactSecrets(whole.slice(0, SCAN_CHARS)).slice(0, limit)}... [${whole.length - limit} more characters]`;
 };
 
@@ -133,10 +150,11 @@ export const specLabel = (name, hash) => `${redactSecrets(name)}@${hash}`;
 // Query, fragment and token-like path segments inside spec-authored address text (an expected address, app.start): hidden
 // like a recorded address. A regular expression is not an address: its "?" and "#" are syntax, so its label is left alone.
 export const hideAddressText = text => String(text)
-  .replace(/\?(?!\[query hidden\])[^\s"']*/g, "?[query hidden]")
-  .replace(/#(?!\[hash hidden\])[^\s"']*/g, "#[hash hidden]")
-  // Path segments only: the character before the slash is not another slash, so a host ("//proof-lab-staging-2026.test") stays.
-  .replace(/(?<=(?:^|[^/])\/)[^\s/?#"']{16,}/g, segment => (/\d/.test(segment) && /[A-Za-z]/.test(segment)) || /^[A-Za-z0-9]{24,}$/.test(segment) ? "[hidden]" : segment);
+  .replace(/\?(?:\[query hidden\]|[^\s"'])*/g, "?[query hidden]")
+  .replace(/#(?:\[hash hidden\]|\[query hidden\]|[^\s"'])*/g, "#[hash hidden]")
+  // Path segments only: not the host after "scheme://" or a leading "//" ("//proof-lab-staging-2026.test" stays), but a
+  // segment after an empty one ("http://h//token...") is still a path segment.
+  .replace(/(?<!(?:^|:)\/\/)(?<!:\/)(?<=\/)[^\s/?#"']{16,}/g, segment => (/\d/.test(segment) && /[A-Za-z]/.test(segment)) || /^[A-Za-z0-9]{24,}$/.test(segment) ? "[hidden]" : segment);
 
 // The one place that makes "nothing written holds a credential" true by construction: every record that leaves the
 // run (receipt, evidence lines, look output) passes through here, whatever field a new sink puts text in. Fields in
@@ -184,7 +202,7 @@ const SENSITIVE_NAME = /password|passwd|passphrase|passcode|secret|token|api[ _-
 // "Pin location" is a field about something else, "Password" or "API key" is the credential.
 const STRONG_NAME = /password|passwd|passphrase|passcode|secret|token|api[ _-]?key|access[ _-]?key|private[ _-]?key|credential|cookie|authorization|session[ _-]?id|(?<![A-Za-z])(?:pwd|pw|otp|pin|sid)(?![A-Za-z])/i;
 // camelCase names are read as words ("authHeader" is "auth_Header", "dbPass" is "db_Pass") before the patterns see them.
-const nameMatches = (pattern, name) => pattern.test(name) || pattern.test(name.replace(/([a-z0-9])([A-Z])/g, "$1_$2"));
+const nameMatches = (pattern, name) => pattern.test(name) || pattern.test(name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z])([A-Z][a-z])/g, "$1_$2"));
 // The names of the data read (key, attribute, property, path) always count; the names of the control count when the step
 // reads the control's value (assertValue, or an attribute or property called "value"), not when it only finds a button
 // called "Show password".
@@ -192,7 +210,7 @@ export const isSensitiveStep = step => {
   const named = (field, pattern) => typeof step?.[field] === "string" && nameMatches(pattern, step[field]);
   const readsValue = step?.op === "assertValue" || (["assertAttribute", "assertProperty"].includes(step?.op) && (step.attribute ?? step.property) === "value");
   return ["key", "attribute", "property", "path"].some(field => named(field, SENSITIVE_NAME))
-    || (readsValue && ["label", "placeholder", "testId", "selector", "name"].some(field => named(field, STRONG_NAME)));
+    || (readsValue && ["label", "placeholder", "testId", "selector", "name", "title", "altText", "text"].some(field => named(field, STRONG_NAME)));
 };
 
 // Long strings and large structures are cut in the receipt; the full value stays in the evidence file.
@@ -230,8 +248,19 @@ export function summarize(checks) {
   };
 }
 
+// A page error already cut at 1000 characters carries a note ("... [N more characters]"); cutting it again must add to that
+// count, not start a second one from the middle.
+const CUT_NOTE = /\.\.\. \[(\d+) more characters\]$/;
+function clipCounted(text, limit) {
+  const note = CUT_NOTE.exec(text);
+  if (note === null) return clipText(text, limit);
+  const body = text.slice(0, note.index);
+  const kept = Math.min(limit, body.length);
+  return `${body.slice(0, kept)}... [${body.length - kept + Number(note[1])} more characters]`;
+}
+
 export function summarizePageErrors(pageErrors) {
-  return pageErrors.slice(0, MAX_PAGE_ERRORS).map(message => clipValue(message));
+  return pageErrors.slice(0, MAX_PAGE_ERRORS).map(message => clipCounted(message, CLIP_CHARS));
 }
 
 // JSON Lines: one record per line, each with a "type", so an agent can grep or read it a section at a time.

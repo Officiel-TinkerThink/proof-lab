@@ -64,7 +64,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
     return answer("CANNOT-TELL", { spec: null, advice: [`The spec could not be read: ${firstLine(error)}. Fix the path or the file.`] });
   }
   const problems = validateSpec(spec);
-  if (problems.length > 0) return answer("CANNOT-TELL", { spec: spec?.name ?? null, advice: [`The spec is invalid: ${problems.join("; ")}. Fix the spec first.`] });
+  if (problems.length > 0) return answer("CANNOT-TELL", { spec: typeof spec?.name === "string" ? redactSecrets(spec.name) : null, advice: [`The spec is invalid: ${problems.join("; ")}. Fix the spec first.`] });
   const specHash = createHash("sha256").update(text).digest("hex").slice(0, 12);
   const base = { spec: redactSecrets(spec.name), specHash };
 
@@ -87,7 +87,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
     const receipt = JSON.parse(await readFile(file, "utf8"));
     if (typeof receipt.spec === "string" && [spec.name, redactSecrets(spec.name)].includes(receipt.spec.slice(0, receipt.spec.lastIndexOf("@")))) mine.push({ ...receipt, file });
   }
-  if (mine.length === 0) return answer("NO-RECEIPT", { ...base, advice: [`No receipt for the spec "${spec.name}" yet. Run it, then ask again.`] });
+  if (mine.length === 0) return answer("NO-RECEIPT", { ...base, advice: [`No receipt for the spec "${base.spec}" yet. Run it, then ask again.`] });
 
   const latest = mine.at(-1);
   const failedChecks = (latest.checks ?? []).filter(check => check.pass === false).map(check => ({ step: check.step, name: check.name }));

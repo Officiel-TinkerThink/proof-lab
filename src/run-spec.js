@@ -331,7 +331,9 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   ];
   records.forEach((record, index) => { records[index] = scrubRecord(record, EVIDENCE_BOOKKEEPING); });
   // The detail a caller gets in process is scrubbed like the files: a consumer added later cannot be the one that leaks.
-  const detail = { checks, steps: scrubValue(stepRecords), contexts: scrubValue(contextRecords), console: scrubValue(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
+  // The same rule as the files (a screenshot's base64 is a picture, not text), so the two cannot differ.
+  const asFiled = list => list.map(record => scrubRecord(record, EVIDENCE_BOOKKEEPING));
+  const detail = { checks, steps: asFiled(stepRecords), contexts: asFiled(contextRecords), console: asFiled(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
   // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
   try {

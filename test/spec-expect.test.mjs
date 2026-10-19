@@ -595,7 +595,7 @@ test("cycle 9: a query after a hash route and a hash in text are hidden; a long 
   const { isSensitiveStep } = await import("../src/spec/evidence.js");
   assert.equal(redactSecrets("went to http://127.0.0.1:4173/#/reset?code=abcd1234efgh ok"), "went to http://127.0.0.1:4173/#[hash hidden] ok");
   assert.equal(redactSecrets("at http://h/p#access=x1y2 end"), "at http://h/p#[hash hidden] end");
-  assert.equal(redactSecrets(redactSecrets("at http://h/p?a=1#b")), "at http://h/p?[query hidden]", "idempotent, the hash after a query goes with it");
+  assert.equal(redactSecrets(redactSecrets("at http://h/p?a=1#b")), "at http://h/p?[query hidden]#[hash hidden]", "idempotent, a query and its fragment each keep a marker");
   const jwt = `eyJhbGciOiJIUzI1NiJ9.${"p".repeat(20000)}.${"s".repeat(500)}`;
   assert.equal(redactSecrets(`t ${jwt} u`), "t [redacted jwt] u");
   assert.equal(isSensitiveStep({ op: "assertValue", label: "PIN" }), true);
@@ -620,6 +620,89 @@ test("cycle 9b: camelCase names, a password with a question mark, a value on the
   assert.equal(redactSecrets('- region "Cookies":\n  - button "Accept all"'), '- region "Cookies":\n  - button "Accept all"');
   assert.doesNotMatch(redactSecrets("password=&quot;hunter22&quot; x"), /hunter22/);
   assert.match(redactSecrets("password=&quot;hunter22&quot; x"), / x$/);
+});
+
+test("cycle 10: a list item below a key is not a value, at any indent", () => {
+  assert.equal(redactSecrets("tokens:\n  - abc\n  - def"), "tokens:\n  - abc\n  - def");
+  assert.equal(redactSecrets('- region Cookies:\n    - button "Accept all"'), '- region Cookies:\n    - button "Accept all"');
+});
+
+test("cycle 10: HTML-escaped keys and values, single or double, across a line break", () => {
+  assert.doesNotMatch(redactSecrets("{&quot;password&quot;:&quot;hunter22&quot;}"), /hunter22/);
+  assert.doesNotMatch(redactSecrets("password=&#39;hunter22&#39; x"), /hunter22/);
+  assert.doesNotMatch(redactSecrets("password=&quot;hunter\n22&quot;"), /hunter|\n22/);
+});
+
+test("cycle 10: an unquoted key=value ends at a blank or an ampersand, an unquoted key: value at the line break", () => {
+  assert.match(redactSecrets("password=abc user=bob"), / user=bob$/);
+  assert.match(redactSecrets("password=abc&user=bob"), /&user=bob$/);
+  const colon = redactSecrets("password: my pass phrase\nnext line");
+  assert.doesNotMatch(colon, /pass phrase/);
+  assert.match(colon, /\nnext line$/);
+  assert.doesNotMatch(redactSecrets('password="my pass phrase" ok'), /pass phrase/);
+});
+
+test("cycle 10: a JWT with a short payload, all-caps and acronym-prefixed names", async () => {
+  const { scrubValue, isSensitiveStep } = await import("../src/spec/evidence.js");
+  assert.doesNotMatch(redactSecrets("eyJhbGciOiJIUzI1NiJ9.e30.c2ln"), /e30|c2ln/);
+  assert.doesNotMatch(redactSecrets("dbPASS=hunter22 DBPass=hunter23"), /hunter2/);
+  assert.equal(redactSecrets("COMPASS=north"), "COMPASS=north");
+  assert.deepEqual(scrubValue({ DBPass: "a1", dbPASS: "b2" }), { DBPass: "[redacted]", dbPASS: "[redacted]" });
+  assert.equal(isSensitiveStep({ op: "assertValue", title: "Password" }), true);
+  assert.equal(isSensitiveStep({ op: "assertValue", altText: "Secret code" }), true);
+});
+
+test("cycle 10: a query or fragment is hidden after a marker, after a long path, and in JSON-escaped slashes", () => {
+  const afterMarker = redactSecrets("see http://h/a?[query hidden]&code=abcd1234efgh");
+  assert.doesNotMatch(afterMarker, /abcd1234efgh/);
+  assert.equal(redactSecrets(afterMarker), afterMarker);
+  assert.doesNotMatch(redactSecrets(`http://h/${"a".repeat(5000)}?code=abc`), /code=abc/);
+  assert.doesNotMatch(redactSecrets("http:\\/\\/h\\/p?code=xyz99"), /xyz99/);
+  assert.doesNotMatch(redactSecrets("http:\\/\\/u:pw99@host"), /pw99/);
+  assert.equal(redactSecrets("go http://h/#/r?c=1 now"), "go http://h/#[hash hidden] now");
+});
+
+test("cycle 10: a path segment after an empty one is hidden, a host is kept", async () => {
+  const { hideAddressText } = await import("../src/spec/evidence.js");
+  assert.equal(hideAddressText("http://h//AbC123dEf456GhI789"), "http://h//[hidden]");
+  assert.equal(hideAddressText("http://proof-lab-staging-2026.test/x"), "http://proof-lab-staging-2026.test/x");
+  assert.equal(hideAddressText("//proof-lab-staging-2026.test/x"), "//proof-lab-staging-2026.test/x");
+  assert.doesNotMatch(hideAddressText("http://h/a?[query hidden]&c=zz99"), /zz99/);
+});
+
+test("cycle 10: a text that fits is kept whole, and a second cut adds to the first count", async () => {
+  const { redactClip, summarizePageErrors } = await import("../src/spec/evidence.js");
+  assert.doesNotMatch(redactClip("pw=ab ".repeat(160), 1000), /more characters/);
+  const long = redactClip("y".repeat(3000), 1000);
+  assert.match(summarizePageErrors([long])[0], /\[2800 more characters\]$/);
+});
+
+test("cycle 10: status of an invalid spec names the spec scrubbed", TIMEOUT, async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { statusOf } = await import("../src/status.js");
+  const { KEY } = await import("./spec-helpers.mjs");
+  const dir = await mkdtemp(join(tmpdir(), "proof-status-"));
+  try {
+    const specPath = join(dir, "s.json");
+    await writeFile(specPath, JSON.stringify({ name: "Session: hunter22" }));
+    const result = await statusOf({ dir: join(dir, "none"), key: KEY, specPath });
+    assert.equal(result.state, "CANNOT-TELL");
+    assert.doesNotMatch(JSON.stringify(result.spec), /hunter22/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cycle 10: the in-process detail holds the same screenshot as the evidence file", TIMEOUT, async () => {
+  const { readFile } = await import("node:fs/promises");
+  await withRun(page("/fixtures/forms.html", [{ op: "assertTitle", check: "title check", equals: "nope", timeout: 0 }]), async receipt => {
+    const filed = (await readFile(receipt.detail.evidencePath, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line)).find(record => record.type === "screenshot");
+    const inProcess = receipt.detail.contexts.find(record => record.type === "screenshot");
+    assert.ok(filed && inProcess, explain(receipt));
+    assert.equal(inProcess.base64, filed.base64);
+  });
 });
 
 test("cycle 9b: many http:// and //x: starts in one long run stay fast", () => {
