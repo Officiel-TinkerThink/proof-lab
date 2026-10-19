@@ -65,6 +65,58 @@ test("no-persist bug FAILs at 'status survives reload'", TIMEOUT, async () => {
   }
 });
 
+test("validateSpec requires key for press and selector for assertVisible", () => {
+  const problems = validateSpec({
+    name: "x",
+    steps: [{ op: "press" }, { op: "assertVisible" }],
+  });
+  assert.equal(problems.length, 2);
+  assert.match(problems[0], /\(press\) needs "key"/);
+  assert.match(problems[1], /\(assertVisible\) needs "selector"/);
+});
+
+test("press Enter submits the form and assertVisible sees the status", TIMEOUT, async () => {
+  const specs = await tempDir("proof-spec-src-");
+  const receipts = await tempDir("proof-spec-");
+  try {
+    const specPath = join(specs, "keyboard.json");
+    await writeFile(specPath, JSON.stringify({
+      name: "keyboard-submit",
+      steps: [
+        { op: "assertVisible", name: "status is visible", selector: "[data-testid=\"status\"]" },
+        { op: "fill", label: "Email", value: "ada@example.test" },
+        { op: "press", key: "Enter" },
+        { op: "waitFor", selector: "[data-testid=\"status\"]", hasText: "waitlisted", optional: true },
+        { op: "assertText", name: "status after Enter", selector: "[data-testid=\"status\"]", equals: "waitlisted" },
+      ],
+    }));
+    const receipt = await runSpec({ specPath, key: KEY, receiptsDir: receipts });
+    assert.equal(receipt.verdict, "PASS", JSON.stringify(receipt.checks, null, 2));
+  } finally {
+    await rm(specs, { recursive: true, force: true });
+    await rm(receipts, { recursive: true, force: true });
+  }
+});
+
+test("assertVisible on a missing element FAILs with that check name", TIMEOUT, async () => {
+  const specs = await tempDir("proof-spec-src-");
+  const receipts = await tempDir("proof-spec-");
+  try {
+    const specPath = join(specs, "missing.json");
+    await writeFile(specPath, JSON.stringify({
+      name: "missing-element",
+      steps: [{ op: "assertVisible", name: "banner is visible", selector: "#no-such-banner" }],
+    }));
+    const receipt = await runSpec({ specPath, key: KEY, receiptsDir: receipts });
+    assert.equal(receipt.verdict, "FAIL");
+    const failed = receipt.checks.filter(check => !check.pass).map(check => check.name);
+    assert.deepEqual(failed, ["banner is visible"]);
+  } finally {
+    await rm(specs, { recursive: true, force: true });
+    await rm(receipts, { recursive: true, force: true });
+  }
+});
+
 test("malformed spec returns ERROR and writes no receipt", TIMEOUT, async () => {
   const specs = await tempDir("proof-spec-src-");
   const receipts = await tempDir("proof-spec-");

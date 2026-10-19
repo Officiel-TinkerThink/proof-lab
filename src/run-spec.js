@@ -13,15 +13,16 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts");
 const TIMEOUT_MS = 3000;
 
-// Common ops first. press and assertVisible are deferred until the common path is tested.
 // Required fields per op. fill, click and assertText have extra either/or rules in validateSpec.
 const OPS = {
   goto: ["url"],
   fill: ["value"],
   click: [],
+  press: ["key"],
   waitFor: ["selector"],
   reload: [],
   assertText: ["selector"],
+  assertVisible: ["selector"],
   assertStorage: ["key", "equals"],
 };
 
@@ -80,6 +81,9 @@ async function runStep(page, step, index, appUrl, checks) {
       case "click":
         await locate(page, step).click();
         return;
+      case "press":
+        await page.keyboard.press(step.key);
+        return;
       case "waitFor":
         // optional: a missed wait is not a failed check; the assertion after it decides (as in prove.js).
         await page.locator(step.selector).filter(step.hasText ? { hasText: step.hasText } : {}).first()
@@ -94,6 +98,11 @@ async function runStep(page, step, index, appUrl, checks) {
         const actual = exists ? (await page.locator(step.selector).first().innerText()).trim() : null;
         const pass = step.equals !== undefined ? actual === step.equals : (actual ?? "").includes(step.contains);
         record(pass, step.equals ?? `contains ${JSON.stringify(step.contains)}`, actual, hint);
+        return;
+      }
+      case "assertVisible": {
+        const actual = await page.locator(step.selector).first().isVisible().catch(() => false);
+        record(actual === true, true, actual, hint);
         return;
       }
       case "assertStorage": {
