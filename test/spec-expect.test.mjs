@@ -755,3 +755,31 @@ test("cycle 9b: many http:// and //x: starts in one long run stay fast", () => {
     assert.ok(Date.now() - started < 4000, `${unit} repeated took ${Date.now() - started} ms`);
   }
 });
+
+test("redactSecrets: a quoted address keeps its own closing quote and what follows it", () => {
+  assert.equal(redactSecrets('{"url":"https://h/x?page=2","status":503}').endsWith('","status":503}'), true);
+  assert.equal(redactSecrets("go 'https://h/x?a=1' now"), "go 'https://h/x?[query hidden]' now");
+  assert.equal(redactSecrets("x https://h/x?token='abc' y").includes("abc"), false);
+});
+
+test("redactSecrets: an unindented list under a credential key is masked; mixed entity quotes end the value", () => {
+  assert.equal(redactSecrets("tokens:\n- abc\n- def").includes("abc"), false);
+  assert.equal(redactSecrets("password=&#34;abc&quot; next").endsWith(" next"), true);
+  assert.equal(redactSecrets("password=&#34;abc&quot; next").includes("abc"), false);
+});
+
+test("redactSecrets: a cut note survives every later scrub, so scrubbing is idempotent", () => {
+  const cut = `Session: ${"a b ".repeat(400)}... [1509 more characters]`;
+  const once = redactSecrets(cut);
+  assert.equal(once.endsWith("... [1509 more characters]"), true);
+  assert.equal(redactSecrets(once), once);
+});
+
+test("redactSecrets: userinfo password is hidden, a port is not, and a hostile run stays fast", () => {
+  assert.equal(redactSecrets("see //u:pw@host/x"), "see //u:[redacted]@host/x");
+  assert.equal(redactSecrets("//host:8080/path@v2"), "//host:8080/path@v2");
+  const started = Date.now();
+  redactSecrets("//a:".repeat(250000));
+  redactSecrets("//a:".repeat(60000) + "@".repeat(60000));
+  assert.equal(Date.now() - started < 3000, true);
+});

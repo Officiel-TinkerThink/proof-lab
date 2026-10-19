@@ -24,7 +24,9 @@ const KEY = String.raw`(?:(?:password|passwd|passphrase|passcode|pwd|secret|toke
 // Blanks stop at a line break: a key at the end of a line ("Cookies":) must not take the next line as its value.
 const SP = String.raw`[^\S\r\n]*`;
 // A quote written as an HTML entity (&quot; &#34; &#x22; &#39; &#x27; &apos;): page text often holds escaped JSON.
-const ENTITY_QUOTE = String.raw`&(?:quot|#34|#x22|#39|#x27|apos);`;
+const ENTITY_DQ = String.raw`&(?:quot|#34|#x22);`;
+const ENTITY_SQ = String.raw`&(?:#39|#x27|apos);`;
+const ENTITY_QUOTE = String.raw`(?:${ENTITY_DQ}|${ENTITY_SQ})`;
 const KEY_END = String.raw`(?:\\?["']|${ENTITY_QUOTE})?${SP}`;
 const BASE64 = "A-Za-z0-9+/_-";
 // "Basic validation" is prose; "Basic dXNlcjpwYXNz" is not: a scheme value needs a digit, + / = or at least 20 characters.
@@ -42,6 +44,38 @@ function hideUrlParts(token) {
   if (query === -1) return token;
   return `${token.slice(0, query)}?[query hidden]${hash === -1 ? "" : "#[hash hidden]"}`;
 }
+// "//user:password@host" inside a token (a run with no blank): the password, up to the last "@" within 2000 characters, is
+// replaced. Done token by token with the "@" positions listed once, so a hostile run of "//a:" starts costs one pass plus a
+// binary search each, never a rescan of the run.
+const USERINFO_HOST = /(?:\\{0,4}\/){2}[^/\s:@]*:/g;
+const PORT_AT = /\d+(?:[/?#]|$)/y;
+const USERINFO_WINDOW = 2000;
+function hideUserinfo(token) {
+  if (!token.includes("@")) return token;
+  const ats = [];
+  for (let at = token.indexOf("@"); at !== -1; at = token.indexOf("@", at + 1)) ats.push(at);
+  let out = "";
+  let copied = 0;
+  USERINFO_HOST.lastIndex = 0;
+  for (let found = USERINFO_HOST.exec(token); found !== null; found = USERINFO_HOST.exec(token)) {
+    const end = found.index + found[0].length;
+    PORT_AT.lastIndex = end;
+    if (PORT_AT.test(token)) continue; // "host:4173/@name": a port is not a password
+    // the last "@" in end+1 .. end+2000 (a binary search over the sorted positions)
+    let low = 0;
+    let high = ats.length - 1;
+    let last = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (ats[mid] <= end + USERINFO_WINDOW) { last = mid; low = mid + 1; } else high = mid - 1;
+    }
+    if (last === -1 || ats[last] < end + 1) continue;
+    out += `${token.slice(copied, end)}[redacted]`;
+    copied = ats[last];
+    USERINFO_HOST.lastIndex = copied;
+  }
+  return copied === 0 ? token : out + token.slice(copied);
+}
 const SECRET_PATTERNS = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted private key]"],
   // A JWT with no signature is still a JWT. It may follow a hyphen ("auth-eyJ..."), not a letter, digit or underscore; each
@@ -50,7 +84,7 @@ const SECRET_PATTERNS = [
   [/(?<![A-Za-z0-9_])eyJ[\w-]{8,997}\.[\w-]+(?:\.[\w-]*)?/g, "[redacted jwt]"],
   // A password in a URL's userinfo goes first: it may itself contain a "?" or "#" that the address rules below would cut at.
   // Bounded, so many "//x:" starts in one long run cost a bounded scan each. Not "host:4173/@name": a port is not a password.
-  [/((?:\\{0,4}\/){2}[^/\s:@]*:)(?!\d+(?:[/?#\s]|$))\S{1,2000}@/g, "$1[redacted]@"],
+  [/\S+/g, hideUserinfo],
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted access key]"],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}|AIza[\w-]{35})/g, "[redacted token]"],
   [new RegExp(String.raw`\b(Bearer|Basic|Digest|OAuth|Token|ApiKey)\s+${SCHEME_VALUE}`, "gi"), "$1 [redacted]"],
@@ -61,9 +95,11 @@ const SECRET_PATTERNS = [
   [new RegExp(String.raw`(${KEY})(:${SP}\r?\n(?![^\S\r\n]*- )[^\S\r\n]+)[^\r\n]+`, "gi"), "$1$2[redacted]"],
   // A list under a credential key (YAML) is a value too, unless the key's own line is a list item (an aria node). The line
   // check runs only where a key is followed by a line break: one scan back per line.
-  [new RegExp(String.raw`(${KEY})(?=:${SP}\r?\n)(?<!(?:^|[\r\n])[^\S\r\n]*- [^\r\n]*)(:${SP}\r?\n[^\S\r\n]+)- [^\r\n]*(?:\r?\n[^\S\r\n]+- [^\r\n]*)*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(?=:${SP}\r?\n)(?<!(?:^|[\r\n])[^\S\r\n]*- [^\r\n]*)(:${SP}\r?\n[^\S\r\n]*)- [^\r\n]*(?:\r?\n[^\S\r\n]*- [^\r\n]*)*`, "gi"), "$1$2[redacted]"],
   // The same key and value HTML-escaped: password=&quot;x&quot; or &#34;x&#34;.
-  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}(${ENTITY_QUOTE}))(?:(?!\3)[\s\S])*`, "gi"), "$1$2[redacted]"],
+  // One rule per quote kind: the value ends at a closing entity of the same kind, whichever way it is spelled.
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}${ENTITY_DQ})(?:(?!${ENTITY_DQ})[\s\S])*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}${ENTITY_SQ})(?:(?!${ENTITY_SQ})[\s\S])*`, "gi"), "$1$2[redacted]"],
   // A quoted value of any length keeps its quotes (an escaped quote does not end it); "key=value" with an unquoted value ends at the next blank, "&", "," or ";" (a passphrase with spaces needs quotes).
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}\\")(?:[^\\]|\\(?!"))*`, "gi"), "$1$2[redacted]"], // value inside \"...\" (JSON inside a string)
   [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])${SP}")(?:[^"\\]|\\.)*`, "gi"), "$1$2[redacted]"],
@@ -75,7 +111,7 @@ const SECRET_PATTERNS = [
   // blank, a quote or a bracket, and from its first "?" or "#" to the next blank (a quote there is part of the query), so
   // an address of any length costs one pass; a marker already there is part of the token, which keeps the rule idempotent
   // and still hides what follows the marker.
-  [/(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
+  [/(?<=")(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^\s"])*)?|(?<=')(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^\s'])*)?|(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
   [/(?<![A-Fa-f0-9])[A-Fa-f0-9]{32,}(?![A-Fa-f0-9])/g, "[redacted hex]"],
   // A run of 40 or more token characters that contains a digit. Long hyphenated words and names ("closed-shadow-root-...")
   // have none and are kept. Starting only where a run begins keeps the scan linear.
@@ -85,8 +121,14 @@ const SECRET_PATTERNS = [
 ];
 // Text of any length is accepted and kept whole (the evidence file holds every check in full); a test feeds the patterns
 // hostile input to keep them linear.
+const CUT_NOTE = /\.\.\. \[\d+ more characters\]$/;
 export function redactSecrets(text) {
-  return SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), String(text));
+  // A cut note ("... [N more characters]") this module appended is kept as it is, so a second scrub changes nothing.
+  const whole = String(text);
+  const note = CUT_NOTE.exec(whole);
+  const body = note === null ? whole : whole.slice(0, note.index);
+  const scrubbed = SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), body);
+  return note === null ? scrubbed : scrubbed + note[0];
 }
 
 // redactSecrets over every string inside a value (a check's expected and actual can be text or a small object).

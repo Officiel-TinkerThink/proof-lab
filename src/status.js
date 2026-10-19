@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { createFixtureHandler } from "./fixtures.js";
 import { render, revisionOf } from "./server.js";
-import { redactSecrets, specLabel } from "./spec/evidence.js";
+import { redactSecrets, scrubValue, specLabel } from "./spec/evidence.js";
 import { validateSpec } from "./spec/schema.js";
 import { firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -61,7 +61,9 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
     text = await readFile(specPath, "utf8");
     spec = JSON.parse(text);
   } catch (error) {
-    return answer("CANNOT-TELL", { spec: null, advice: [`The spec could not be read: ${redactSecrets(firstLine(error))}. Fix the path or the file.`] });
+    // A JSON.parse message can quote the file's own bytes, so only the kind of failure is reported.
+    const kind = error instanceof SyntaxError ? "parsed as JSON" : `read (${error?.code ?? "error"})`;
+    return answer("CANNOT-TELL", { spec: null, advice: [`The spec could not be ${kind}. Fix the path or the file.`] });
   }
   const problems = validateSpec(spec);
   if (problems.length > 0) return answer("CANNOT-TELL", { spec: typeof spec?.name === "string" ? redactSecrets(spec.name) : null, advice: [`The spec is invalid: ${redactSecrets(problems.join("; "))}. Fix the spec first.`] });
@@ -114,7 +116,8 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   // The second form is a receipt written before the name was scrubbed.
   if (![specLabel(spec.name, specHash), `${spec.name}@${specHash}`].includes(latest.spec)) reasons.push("the spec changed since this receipt");
   const revisionNow = await currentRevision(spec);
-  common.currentRevision = revisionNow;
+  // The revision comes from the app's own header or page: scrubbed for display, compared raw below.
+  common.currentRevision = typeof revisionNow === "string" ? redactSecrets(revisionNow) : revisionNow;
   let unverified = false;
   if (revisionNow !== null && latest.revision !== null) {
     if (revisionNow !== latest.revision) reasons.push(`the app changed: the receipt says PASS for ${latest.revision}, but the source is now ${revisionNow}`);
@@ -180,7 +183,9 @@ export async function main(args, { defaultReceipts }) {
     maxAttempts: Math.floor(number("max-attempts", DEFAULT_MAX_ATTEMPTS)),
     maxAgeSeconds: number("max-age", undefined),
   });
-  console.log(values.json ? JSON.stringify(result, null, 2) : formatStatus(result));
+  // Everything printed is scrubbed once more here, whichever field a later change puts text in.
+  const shown = scrubValue(result);
+  console.log(values.json ? JSON.stringify(shown, null, 2) : formatStatus(shown));
   return result.exitCode;
 }
 

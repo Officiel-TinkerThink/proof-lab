@@ -193,8 +193,11 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const pageErrorLengths = new Map();
   const noteError = raw => {
     const message = redactClip(raw, 1000);
-    if (!pageErrorLengths.has(message)) pageErrorLengths.set(message, String(raw).length);
-    if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(message);
+    // The length is kept only for a message that is kept: the map cannot outgrow the capped set.
+    if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) {
+      pageErrors.add(message);
+      if (!pageErrorLengths.has(message)) pageErrorLengths.set(message, String(raw).length);
+    }
     else if (!pageErrors.has(message)) pageErrorsDropped += 1;
   };
   const consoleRecords = [];
