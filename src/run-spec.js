@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
 import { clipValue, evidenceText, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
@@ -40,9 +41,10 @@ function labelOf(step, index) {
   return `step ${index}: ${step.op} ${describeTarget(step)}`.trim();
 }
 
-export function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
+// adopt(page) gives a popup the hooks and timeouts of the first page (see openSession); ctx.page moves to a popup on switchTo.
+export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks }) {
   const ctx = {
-    page, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
+    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
     record(step, pass, expected, actual, error) {
       // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
       if (!pass && step.optional) {
@@ -67,7 +69,8 @@ export async function runStep(ctx, step) {
   const target = describeTarget(step);
   if (target) record.target = target;
   try {
-    await bounded(STEPS[step.op](ctx, step), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS, `step ${ctx.index} (${step.op})`);
+    const act = () => STEPS[step.op](ctx, step);
+    await bounded(step.expect === undefined ? act() : withExpectations(ctx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS, `step ${ctx.index} (${step.op})`);
   } catch (error) {
     if (step.optional) {
       record.skipped = firstLine(error);
@@ -211,7 +214,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
-    const ctx = createContext({ page, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
+    const ctx = createContext({ page, adopt: session.adopt, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
     for (const [i, step] of spec.steps.entries()) {
       ctx.index = i + 1;
       const first = checks.length;

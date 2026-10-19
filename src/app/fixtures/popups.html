@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Popups fixture</title>
+<link rel="icon" href="data:,">
+</head>
+<body>
+<h1>Popups</h1>
+<p><a href="/fixtures/nav-b.html" target="_blank">Open page B in a new tab</a></p>
+<p><button type="button" id="open-script">Open page B from script</button></p>
+<p><button type="button" id="open-twice">Open page B twice</button></p>
+<p><button type="button" id="open-later">Open page B after a pause</button></p>
+<p><button type="button" id="nothing">Do nothing</button> <span data-testid="state">idle</span></p>
+<script>
+const open = () => window.open("/fixtures/nav-b.html", "_blank");
+document.getElementById("open-script").addEventListener("click", open);
+document.getElementById("open-twice").addEventListener("click", () => { open(); open(); });
+document.getElementById("open-later").addEventListener("click", () => setTimeout(open, 600));
+document.getElementById("nothing").addEventListener("click", () => { document.querySelector('[data-testid="state"]').textContent = "clicked"; });
+</script>
+</body>
+</html>

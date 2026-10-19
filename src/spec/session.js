@@ -16,7 +16,7 @@ export function contextOptionsOf(env) {
 }
 
 // hooks: onLaunch(browserVersion), onPageError(message), onConsole(level, text), onResponse(response), onRequestFailed(request), all optional.
-// Returns { browser, page, browserVersion, close }. close() never throws. Navigation to firstUrl is part of opening:
+// Returns { browser, page, adopt(page), browserVersion, close }. close() never throws. Navigation to firstUrl is part of opening:
 // if it fails the browser is closed again and the error is thrown.
 export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
   const browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
@@ -25,15 +25,19 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
   hooks.onLaunch?.(browserVersion); // before the first navigation, so a run that fails there still records its browser
   try {
     const context = await browser.newContext(contextOptionsOf(env));
-    const page = await context.newPage();
-    page.setDefaultTimeout(timeoutMs);
-    page.setDefaultNavigationTimeout(Math.max(timeoutMs, MIN_NAVIGATION_TIMEOUT_MS));
-    page.on("pageerror", error => hooks.onPageError?.(error.message));
-    page.on("console", message => hooks.onConsole?.(message.type(), message.text()));
-    page.on("response", response => hooks.onResponse?.(response));
-    page.on("requestfailed", request => hooks.onRequestFailed?.(request));
+    // The first page and every popup get the same timeouts and hooks: an error on a second tab is still the app's error.
+    const adopt = page => {
+      page.setDefaultTimeout(timeoutMs);
+      page.setDefaultNavigationTimeout(Math.max(timeoutMs, MIN_NAVIGATION_TIMEOUT_MS));
+      page.on("pageerror", error => hooks.onPageError?.(error.message));
+      page.on("console", message => hooks.onConsole?.(message.type(), message.text()));
+      page.on("response", response => hooks.onResponse?.(response));
+      page.on("requestfailed", request => hooks.onRequestFailed?.(request));
+      return page;
+    };
+    const page = adopt(await context.newPage());
     await page.goto(firstUrl, { waitUntil: "load" });
-    return { browser, page, browserVersion, close };
+    return { browser, page, adopt, browserVersion, close };
   } catch (error) {
     await close();
     throw error;

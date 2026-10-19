@@ -103,7 +103,7 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
-### Operations (47)
+### Operations (49)
 
 | Op | Fields | Notes |
 |---|---|---|
@@ -144,6 +144,34 @@ unless `nth` is given. `assertCount` counts all matches.
 | `setStorage` | `area?`, `key`, `value` | A non-string value is stored as JSON, the form `assertStorage` reads back. The page must already be on the app (about:blank has no storage). |
 | `clearStorage` | `area?`, `key?` | One key, or the whole area. |
 | `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string with an offset such as `2030-06-15T12:00:00Z` or `+02:00`, a bare date = UTC midnight, or epoch ms; a time without an offset is rejected because it would depend on the runner's time zone), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
+| `switchTab` | `index`, or one of `equals` `contains` `matches` | Moves the spec to another open tab. `index` counts tabs in the order they opened (0 = the first page of the run); the other form matches the tab's address. No such tab is a failed step. |
+| `closeTab` | | Closes the current tab and moves to the last one still open. The only tab cannot be closed. |
+
+`matches` is a regular expression; `flags` may use `i m s u v` (not `g` or `y`).
+
+### Expectations: what an action must cause
+
+`goto` `back` `forward` `reload` `click` `dblclick` `press` `check` `uncheck` `selectOption` `setInputFiles` `dragTo`
+take an `expect` block. The listeners are armed **before** the action runs (the event can fire before the action
+returns), and each kind in the block records **one check** named `<step> -> dialog|download|popup`, with what was
+asked and what really happened. If the action itself fails, only that failure is recorded: the missing event is a
+consequence, not a second finding. A step with an `expect` block counts as a check for the "a spec needs a check" rule.
+
+```json
+{ "op": "click", "role": "button", "name": "Delete", "expect": { "dialog": { "type": "confirm", "message": { "contains": "Delete" }, "action": "accept" } } }
+```
+
+A text field below is a string (equals) or an object with one of `equals` `contains` `matches` (and `flags`).
+
+| Kind | Fields | Behaviour |
+|---|---|---|
+| `dialog` | `type?` (`alert` `confirm` `prompt` `beforeunload`), `message?`, `action?` (`accept` default, `dismiss`), `promptText?` | The dialog is answered as `action` says; `promptText` is typed into an accepted prompt (without it OK keeps the prompt's default text). The check's `actual` is `{ type, message, answered }`, plus `dialogs` when more than one opened (the first is checked, all are answered alike). Without an `expect` block a dialog is dismissed by the browser and not recorded. |
+| `download` | `filename?`, `content?` | `filename` is the suggested name. `content` is the text of the file, read only up to 1,000,000 bytes (a larger file fails the check). `actual` is `{ filename, bytes, content }` with the content clipped to 200 characters. |
+| `popup` | `url?`, `title?`, `switchTo?` (default `true`) | A new tab opened by the step (a `target=_blank` link or `window.open`). It is waited for until DOM content is loaded. The spec **moves into the popup** unless `switchTo` is `false`; later steps then act on it. The popup's console, page errors and failed requests count like the first page's. |
+
+Every kind also takes `appears: false`: nothing of that kind may happen. It waits `within` ms (default 500, at most
+60000) and fails if one happened; no other field may be given with it. For an expected event the wait is the step's
+`timeout`, counted from the start of the step.
 
 `matches` is a regular expression; `flags` may use `i m s u v` (not `g` or `y`).
 
@@ -232,7 +260,7 @@ The built-in server serves pages and endpoints so every op has something real to
 
 Pages (`/fixtures/<name>.html`): `forms` (every input type, validation, submit, reset), `interact` (click variants,
 hover, keys, focus order, drag, scroll), `timing` (delays, debounce, lazy elements), `nav` and `nav-b` (links, history,
-hash and query routes, popups), `frames` (iframes, open and closed shadow DOM), `dialogs` (alert, confirm, prompt,
+hash and query routes), `popups` (a `target=_blank` link, `window.open` from a script, two at once, one after a pause), `frames` (iframes, open and closed shadow DOM), `dialogs` (alert, confirm, prompt,
 download, file input, clipboard, geolocation, notifications), `storage` (cookies, local/session storage, IndexedDB,
 locale, time zone, colour scheme), `env` (viewport, colour scheme, reduced motion, print media, locale, number format,
 time zone, online state, geolocation, a fetch to try offline, current time, a 5 s timer), `network` (fetch, slow, failing, console and page errors), `a11y` and `a11y-bad`.
@@ -246,6 +274,6 @@ Endpoints: `/api/items`, `/api/echo`, `/api/slow?ms=`, `/api/status/<code>`, `/a
 - A closed shadow root cannot be reached by any locator.
 - `back` and `forward` cannot tell "no history" from a same-document move; assert the URL.
 - `assertText` reads rendered text. `assertAttribute` or `assertProperty` read the source value.
-- Not yet covered: dialogs, downloads, popups and tabs as step expectations, network mocking, accessibility audits,
+- Not yet covered: file chooser, request and response expectations, network mocking, accessibility audits,
   and visual comparison. See the roadmap in the commit history.
 - Locale and time zone are fixed per run (`env`), not changed mid-run: they need a new browser context.

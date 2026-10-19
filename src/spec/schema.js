@@ -32,7 +32,7 @@ const CLICK_FIELDS = { button: ["left", "right", "middle"], clickCount: "integer
 const RANGES = {
   nth: [0, Infinity], level: [0, Infinity], clickCount: [1, Infinity], delay: [0, Infinity],
   count: [0, Infinity], min: [0, Infinity], max: [0, Infinity], status: [100, 599],
-  width: [1, 10000], height: [1, 10000], latitude: [-90, 90], longitude: [-180, 180], accuracy: [0, Infinity], ms: [0, Infinity],
+  width: [1, 10000], height: [1, 10000], latitude: [-90, 90], longitude: [-180, 180], accuracy: [0, Infinity], ms: [0, Infinity], index: [0, Infinity],
 };
 
 // Element types for array fields.
@@ -108,7 +108,25 @@ export const OPS = {
   clearStorage: { target: "none", fields: { area: ["local", "session"], key: "string" } },
   // install and setFixedTime/pauseAt take a time, fastForward and runFor take milliseconds.
   clock: { target: "none", fields: { action: CLOCK_ACTIONS, time: "string|number", ms: "number" }, required: ["action"] },
+
+  // Tabs: index counts open tabs in the order they were opened (0 = the first page); the other form matches the address.
+  switchTab: { target: "none", fields: { index: "integer", ...MATCH }, oneOf: ["index", ...MATCH_ONE] },
+  closeTab: { target: "none", fields: {} },
 };
+
+// These steps can cause a dialog, a download or a popup, so they take an "expect" block (see EXPECT_KINDS).
+const EXPECTING_OPS = ["goto", "back", "forward", "reload", "click", "dblclick", "press", "check", "uncheck", "selectOption", "setInputFiles", "dragTo"];
+for (const op of EXPECTING_OPS) OPS[op] = { ...OPS[op], fields: { ...OPS[op].fields, expect: "object" } };
+
+const DIALOG_TYPES = ["alert", "confirm", "prompt", "beforeunload"];
+const MAX_WITHIN_MS = 60000;
+// What each kind of expectation may say. A text field is a string (equals) or an object with one of equals, contains, matches.
+const EXPECT_KINDS = {
+  dialog: { type: DIALOG_TYPES, message: "string|object", action: ["accept", "dismiss"], promptText: "string", appears: "boolean", within: "number" },
+  download: { filename: "string|object", content: "string|object", appears: "boolean", within: "number" },
+  popup: { url: "string|object", title: "string|object", switchTo: "boolean", appears: "boolean", within: "number" },
+};
+const EXPECT_TEXT_FIELDS = { dialog: ["message"], download: ["filename", "content"], popup: ["url", "title"] };
 
 // Browser-context settings a spec may fix for the whole run.
 const ENV_FIELDS = { viewport: "object", locale: "string", timezoneId: "string", colorScheme: COLOR_SCHEMES, reducedMotion: REDUCED_MOTION, geolocation: "object", permissions: "array" };
@@ -237,6 +255,43 @@ function checkClock(step, label, problems) {
   if (typeof step.time === "number" && !(step.time >= 0)) problems.push(`${label}.time must be 0 or more (epoch milliseconds)`);
 }
 
+// A text expectation inside an expect block: a string means equals; an object has exactly one of equals, contains, matches.
+function checkTextMatcher(value, label, problems) {
+  if (!isObject(value)) return;
+  checkFields(value, label, MATCH, problems);
+  const given = MATCH_ONE.filter(key => value[key] !== undefined);
+  if (given.length !== 1) problems.push(`${label} needs exactly one of ${MATCH_ONE.join(", ")}`);
+  if (value.flags !== undefined && value.matches === undefined) problems.push(`${label}.flags only applies with matches`);
+  if (typeof value.flags === "string" && !REGEX_FLAGS.test(value.flags)) problems.push(`${label}.flags may only use d, i, m, s, u, v`);
+  if (typeof value.matches === "string") {
+    try { new RegExp(value.matches, value.flags); } catch (error) { problems.push(`${label}.matches is not a valid regular expression: ${error.message}`); }
+  }
+}
+
+// The expect block of an action step: one object per kind of event the step must cause.
+function checkExpect(expect, label, problems) {
+  const at = `${label}.expect`;
+  checkFields(expect, at, { dialog: "object", download: "object", popup: "object" }, problems);
+  if (Object.keys(expect).length === 0) problems.push(`${at} needs at least one of ${Object.keys(EXPECT_KINDS).join(", ")}`);
+  for (const [kind, fields] of Object.entries(EXPECT_KINDS)) {
+    const block = expect[kind];
+    if (!isObject(block)) continue;
+    const path = `${at}.${kind}`;
+    checkFields(block, path, fields, problems);
+    for (const key of EXPECT_TEXT_FIELDS[kind]) checkTextMatcher(block[key], `${path}.${key}`, problems);
+    if (typeof block.within === "number" && !(block.within >= 0 && block.within <= MAX_WITHIN_MS)) problems.push(`${path}.within must be from 0 to ${MAX_WITHIN_MS}`);
+    if (block.appears === false) {
+      const extra = Object.keys(block).filter(key => key !== "appears" && key !== "within");
+      if (extra.length > 0) problems.push(`${path}: appears false means nothing may happen, so ${extra.join(", ")} cannot be given`);
+    } else if (block.within !== undefined) {
+      problems.push(`${path}.within only applies with appears: false (the step's timeout is how long an expected event is waited for)`);
+    }
+    if (kind === "dialog" && block.promptText !== undefined && (block.action === "dismiss" || (block.type !== undefined && block.type !== "prompt"))) {
+      problems.push(`${path}.promptText only applies when a prompt is accepted`);
+    }
+  }
+}
+
 // The settings that fix the browser context for the whole run: checked without a browser.
 function checkEnv(env, problems) {
   checkFields(env, "env", ENV_FIELDS, problems);
@@ -313,6 +368,7 @@ function validateStep(step, at) {
   if (step.op === "goto" && typeof step.url === "string" && step.url.trim() === "") problems.push(`${label}.url must not be empty`);
   if (Array.isArray(step.permissions)) checkPermissions(step.permissions, `${label}.permissions`, problems);
   if (step.op === "clock") checkClock(step, label, problems);
+  if (isObject(step.expect)) checkExpect(step.expect, label, problems);
   if (step.op === "setCookie") {
     if (step.cookie === "") problems.push(`${label}.cookie must not be empty`);
     if (typeof step.path === "string" && !step.path.startsWith("/")) problems.push(`${label}.path must start with /`);
@@ -328,8 +384,8 @@ function validateStep(step, at) {
   return problems;
 }
 
-// A step records a check when it asserts, or when goto is told which status to expect.
-const recordsCheck = step => isObject(step) && has(OPS, step.op) && (OPS[step.op].assertion === true || (step.op === "goto" && step.status !== undefined));
+// A step records a check when it asserts, when goto is told which status to expect, or when it has an expect block.
+const recordsCheck = step => isObject(step) && has(OPS, step.op) && (OPS[step.op].assertion === true || (step.op === "goto" && step.status !== undefined) || isObject(step.expect));
 
 function checkApp(app, problems) {
   checkFields(app, "app", APP_FIELDS, problems);

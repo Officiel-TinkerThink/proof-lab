@@ -24,7 +24,7 @@ const strict = (ctx, step) => locate(ctx.page, step);
 const reader = (ctx, step) => (step.nth === undefined ? locate(ctx.page, step).first() : locate(ctx.page, step));
 
 // equals | contains | matches, as a test function and a readable label.
-function matcher(step) {
+export function matcher(step) {
   if (step.equals !== undefined) return { test: value => value === step.equals, label: step.equals, kind: "equals", value: step.equals };
   if (step.contains !== undefined) {
     return { test: value => typeof value === "string" && value.includes(step.contains), label: `contains ${JSON.stringify(step.contains)}`, kind: "contains", value: step.contains };
@@ -311,5 +311,27 @@ export const STEPS = {
     else if (step.action === "fastForward") await clock.fastForward(step.ms);
     else if (step.action === "runFor") await clock.runFor(step.ms);
     else await clock.resume();
+  },
+
+  // Tabs: the open pages of the browser context in the order they were opened (0 is the first page of the run).
+  async switchTab(ctx, step) {
+    const pages = ctx.page.context().pages();
+    let target;
+    if (step.index !== undefined) target = pages[step.index];
+    else {
+      const match = matcher(step);
+      target = pages.find(candidate => match.test(candidate.url()));
+    }
+    if (!target) throw new Error(step.index !== undefined ? `there is no tab ${step.index} (${pages.length} open)` : `no open tab has a matching address (${pages.length} open)`);
+    await target.bringToFront();
+    ctx.page = target;
+  },
+  // Closes the current tab and moves to the last one still open; closing the only tab is a failed step.
+  async closeTab(ctx) {
+    const context = ctx.page.context();
+    if (context.pages().length < 2) throw new Error("this is the only open tab");
+    await ctx.page.close();
+    ctx.page = context.pages().at(-1);
+    await ctx.page.bringToFront();
   },
 };

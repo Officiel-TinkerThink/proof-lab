@@ -146,8 +146,9 @@ export async function look({ url, specPath, until, screenshotPath }) {
     });
 
     const replayed = [];
+    let ctx = null;
     if (spec) {
-      const ctx = createContext({ page: session.page, appUrl, specDir: dirname(resolve(specPath)), timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, checks: [] });
+      ctx = createContext({ page: session.page, adopt: session.adopt, appUrl, specDir: dirname(resolve(specPath)), timeoutMs: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS, checks: [] });
       const last = until ?? spec.steps.length;
       for (const [index, step] of spec.steps.slice(0, last).entries()) {
         ctx.index = index + 1;
@@ -156,19 +157,21 @@ export async function look({ url, specPath, until, screenshotPath }) {
       }
     }
 
-    const facts = await pageFacts(session.page);
+    // A replayed step may have moved the spec to a popup: look at the page the spec ends on.
+    const view = ctx?.page ?? session.page;
+    const facts = await pageFacts(view);
     let title = null;
-    try { title = await bounded(session.page.title(), 2000, "reading the title"); } catch { /* frozen or closed page */ }
+    try { title = await bounded(view.title(), 2000, "reading the title"); } catch { /* frozen or closed page */ }
     let screenshot = null;
     if (screenshotPath !== undefined) {
-      const png = await bounded(session.page.screenshot({ fullPage: true, timeout: 5000 }), 8000, "taking the picture");
+      const png = await bounded(view.screenshot({ fullPage: true, timeout: 5000 }), 8000, "taking the picture");
       await writeFile(screenshotPath, png, { flag: "wx" }); // never replaces a file that is already there
       screenshot = screenshotPath;
     }
     return {
-      url: withoutQuery(session.page.url()),
+      url: withoutQuery(view.url()),
       title,
-      status: documentStatuses.get(session.page.url().split("#")[0]) ?? null,
+      status: documentStatuses.get(view.url().split("#")[0]) ?? null,
       replayed,
       aria: facts.aria === null ? null : clipValue(facts.aria, ARIA_CHARS),
       elements: facts.aria === null ? [] : actionableElements(facts.aria),
