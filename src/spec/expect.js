@@ -119,6 +119,7 @@ const ARM = {
 
   popup(ctx, block) {
     const page = ctx.page;
+    const epoch = ctx.epoch;
     let found = null;
     const happened = signal();
     // The popup gets the run's hooks at once: an error it throws while loading is the app's error.
@@ -153,7 +154,8 @@ const ARM = {
         // The spec carries on in the new tab unless it says not to, or the tab has already closed itself.
         if (block.switchTo !== false && !found.isClosed()) {
           await found.bringToFront().catch(() => {});
-          ctx.page = found;
+          // bringToFront can outlast the step: a step that was given up on must not move the run to another tab.
+          if (ctx.epoch === epoch && !found.isClosed()) ctx.page = found;
         }
         const pass = error === undefined
           && (block.url === undefined || matchOf(block.url).test(actual.url))
@@ -170,6 +172,7 @@ export async function withExpectations(ctx, step, labelOf, action) {
   const deadline = performance.now() + (step.timeout ?? ctx.timeoutMs);
   // If the step was given up on (its bound hit) while this still waits, a late record would land on a later step.
   const index = ctx.index;
+  const epoch = ctx.epoch;
   const armed = Object.keys(ARM)
     .filter(kind => step.expect[kind] !== undefined)
     .map(kind => ({ kind, block: step.expect[kind], ...ARM[kind](ctx, step.expect[kind]) }));
@@ -183,7 +186,7 @@ export async function withExpectations(ctx, step, labelOf, action) {
     const label = labelOf(step, index);
     for (const entry of armed) {
       const outcome = await entry.evaluate(deadline - performance.now());
-      if (ctx.index !== index) return;
+      if (ctx.epoch !== epoch) return;
       ctx.record({ ...step, check: `${label} -> ${entry.kind}` }, outcome.pass, outcome.expected, outcome.actual, outcome.error);
     }
   } finally {

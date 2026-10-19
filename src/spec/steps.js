@@ -1,6 +1,6 @@
 // One function per op. Actions throw when the page does not allow them (the runner records that as a failed check).
 // Assertions never throw: they poll, then record a check with the last value read.
-import { createHash } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hasTarget, locate } from "./locate.js";
@@ -9,6 +9,10 @@ import { defined, pick, readPath } from "./util.js";
 
 // Reads inside a poll are short so the poll, not Playwright, decides how long to keep trying.
 const READ_TIMEOUT_MS = 250;
+
+// Cookie fingerprints are keyed with a random key that lives only in this process and is never written down: within
+// one run equal values match and different values differ, but nobody holding a receipt can guess a short value offline.
+const FINGERPRINT_KEY = randomBytes(32);
 
 // A claim no assertion can settle (copy tone, layout feel). It is neither a pass nor a fail: it is listed for a human.
 // The page is not touched, and the step needs no target.
@@ -262,7 +266,7 @@ export const STEPS = {
     // A cookie value is often a session token, and whether it is httpOnly is known only after reading it: the receipt
     // never carries the expected value, only how it is compared and its length.
     // A short fingerprint stands in for the value: two different values show two different fingerprints on a mismatch.
-    const print = value => `${String(value).length} characters, sha256 ${createHash("sha256").update(String(value)).digest("hex").slice(0, 8)}`;
+    const print = value => `${String(value).length} characters, sha256 ${createHmac("sha256", FINGERPRINT_KEY).update(String(value)).digest("hex").slice(0, 8)}`;
     const expected = match === null
       ? { exists: step.exists }
       : `${match.kind} (${match.kind === "equals" ? print(match.value) : `${String(match.value).length} characters`})`;

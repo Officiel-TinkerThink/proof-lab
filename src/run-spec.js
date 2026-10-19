@@ -64,6 +64,7 @@ export function createContext({ page, adopt = page => page, appUrl, specDir, tim
 export async function runStep(ctx, step) {
   const first = ctx.checks.length;
   const suppressedBefore = ctx.suppressed.length;
+  ctx.epoch = (ctx.epoch ?? 0) + 1; // work left over from an earlier, abandoned step can tell that it is stale
   const started = performance.now();
   const record = { type: "step", step: ctx.index, op: step.op, check: labelOf(step, ctx.index) };
   const target = describeTarget(step);
@@ -72,6 +73,7 @@ export async function runStep(ctx, step) {
     const act = () => STEPS[step.op](ctx, step);
     await bounded(step.expect === undefined ? act() : withExpectations(ctx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
   } catch (error) {
+    ctx.epoch += 1; // the step is given up on: anything it still has in flight must not touch the run any more
     if (step.optional) {
       record.skipped = firstLine(error);
     } else {
