@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: timing</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:40rem}</style>
+</head>
+<body>
+<h1>Timing</h1>
+<button id="start" type="button">Start</button>
+<p data-testid="state">idle</p>
+<div id="spinner" role="progressbar" aria-label="Loading" hidden>Loading...</div>
+<ul id="results" aria-live="polite"></ul>
+
+<div><label for="search">Search</label> <input id="search" type="text" autocomplete="off"></div>
+<p data-testid="debounced">none</p>
+
+<div data-testid="fade" style="opacity:0;transition:opacity 500ms">Fades in</div>
+<div id="lazy-host"></div>
+<script>
+const state = document.querySelector("[data-testid=state]");
+const spinner = document.getElementById("spinner");
+const results = document.getElementById("results");
+
+// 1000 ms of "loading": spinner shows, then goes away and results appear.
+document.getElementById("start").addEventListener("click", () => {
+  state.textContent = "loading";
+  spinner.hidden = false;
+  results.innerHTML = "";
+  setTimeout(() => {
+    spinner.hidden = true;
+    state.textContent = "ready";
+    results.innerHTML = "<li>alpha</li><li>beta</li>";
+  }, 1000);
+});
+
+// 300 ms debounce: the shown value lags the typed value.
+let timer;
+document.getElementById("search").addEventListener("input", event => {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    document.querySelector("[data-testid=debounced]").textContent = event.target.value || "none";
+  }, 300);
+});
+
+// Fade-in after load, and an element that is attached to the DOM only after 800 ms.
+setTimeout(() => { document.querySelector("[data-testid=fade]").style.opacity = "1"; }, 100);
+setTimeout(() => {
+  const lazy = document.createElement("p");
+  lazy.setAttribute("data-testid", "lazy");
+  lazy.textContent = "lazy loaded";
+  document.getElementById("lazy-host").append(lazy);
+}, 800);
+</script>
+</body>
+</html>

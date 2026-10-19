@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { createFixtureHandler } from "./fixtures.js";
 
 // Known defects for experiments. Each `find` must match the source exactly once.
 export const BUGS = {
@@ -16,6 +17,7 @@ export const BUGS = {
 };
 
 const APP_FILE = fileURLToPath(new URL("./app/index.html", import.meta.url));
+const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 
 export function applyBug(html, bug) {
   if (!bug) return html;
@@ -45,24 +47,42 @@ export async function render({ bug } = {}) {
 
 export async function startApp({ bug, port = 0 } = {}) {
   await render({ bug }); // fail at startup, not on the first request
+  const fixtures = createFixtureHandler({ revisionOf });
   const server = createServer(async (req, res) => {
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    // Only this machine's own names are served: a rebinding page reaches 127.0.0.1 under its own host name.
+    if (!ALLOWED_HOSTS.has((req.headers.host ?? "").replace(/:\d+$/, ""))) {
+      res.writeHead(421, { "Content-Type": "text/plain" });
+      res.end("Misdirected request");
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
     try {
       if (path === "/") {
         const { html } = await render({ bug });
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         res.end(html);
       } else if (path === "/__revision") {
-        const { revision } = await render({ bug });
-        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify({ revision }));
-      } else {
+        // ?path=/fixtures/<page> asks for that fixture's revision; no query means the app itself.
+        const target = url.searchParams.get("path");
+        const revision = target ? await fixtures.revisionFor(target) : (await render({ bug })).revision;
+        if (revision === null) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("Not found");
+        } else {
+          res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+          res.end(JSON.stringify({ revision }));
+        }
+      } else if (!(await fixtures.handle(req, res, url))) {
         res.writeHead(404, { "Content-Type": "text/plain" });
         res.end("Not found");
       }
     } catch (error) {
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end(error instanceof Error ? error.message : "Render failed");
+      // Only an error that carries its own status (a 413 for a large body) shows its message. Anything else could
+      // carry a file path from the operating system, so the client gets a fixed text.
+      const status = error?.status ?? 500;
+      res.writeHead(status, { "Content-Type": "text/plain" });
+      res.end(error?.status && error instanceof Error ? error.message : "Internal error");
     }
   });
   await new Promise((resolve, reject) => {

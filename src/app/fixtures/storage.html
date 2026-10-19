@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: storage and environment</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:44rem}dt{font-weight:600}</style>
+</head>
+<body>
+<h1>Storage and environment</h1>
+<p>
+  <button id="set-cookie" type="button">Set cookie</button>
+  <button id="set-local" type="button">Set local</button>
+  <button id="set-session" type="button">Set session</button>
+  <button id="save-prefs" type="button">Save prefs</button>
+  <button id="save-idb" type="button">Save record</button>
+  <button id="load-idb" type="button">Load record</button>
+  <button id="clear-all" type="button">Clear all</button>
+</p>
+<dl>
+  <dt>Cookies (script-visible)</dt><dd data-testid="cookies">none</dd>
+  <dt>localStorage ui-local</dt><dd data-testid="local-value">none</dd>
+  <dt>sessionStorage ui-session</dt><dd data-testid="session-value">none</dd>
+  <dt>IndexedDB record</dt><dd data-testid="idb-value">none</dd>
+  <dt>Year</dt><dd data-testid="now-year"></dd>
+  <dt>ISO time at load</dt><dd data-testid="now-iso"></dd>
+  <dt>Language</dt><dd data-testid="locale"></dd>
+  <dt>Time zone</dt><dd data-testid="timezone"></dd>
+  <dt>Number format</dt><dd data-testid="number-format"></dd>
+  <dt>Colour scheme</dt><dd data-testid="scheme"></dd>
+  <dt>Motion</dt><dd data-testid="motion"></dd>
+  <dt>Online</dt><dd data-testid="online"></dd>
+</dl>
+<script>
+const $ = selector => document.querySelector(selector);
+const show = (id, value) => { $(`[data-testid=${id}]`).textContent = value; };
+
+function refresh() {
+  show("cookies", document.cookie || "none");
+  show("local-value", localStorage.getItem("ui-local") ?? "none");
+  show("session-value", sessionStorage.getItem("ui-session") ?? "none");
+}
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("spec-db", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("items", { keyPath: "id" });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+const done = request => new Promise((resolve, reject) => {
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+
+$("#set-cookie").addEventListener("click", () => { document.cookie = "ui_cookie=hello; path=/; SameSite=Lax"; refresh(); });
+$("#set-local").addEventListener("click", () => { localStorage.setItem("ui-local", "L1"); refresh(); });
+$("#set-session").addEventListener("click", () => { sessionStorage.setItem("ui-session", "S1"); refresh(); });
+// An object whose keys are stored in a different order than a spec is likely to write them.
+$("#save-prefs").addEventListener("click", () => { localStorage.setItem("prefs", JSON.stringify({ density: "compact", theme: "dark" })); });
+
+$("#save-idb").addEventListener("click", async () => {
+  const db = await openDb();
+  await done(db.transaction("items", "readwrite").objectStore("items").put({ id: 1, name: "idb-record" }));
+  db.close();
+  show("idb-value", "saved");
+});
+$("#load-idb").addEventListener("click", async () => {
+  const db = await openDb();
+  const record = await done(db.transaction("items").objectStore("items").get(1));
+  db.close();
+  show("idb-value", record ? record.name : "none");
+});
+
+$("#clear-all").addEventListener("click", async () => {
+  document.cookie = "ui_cookie=; path=/; max-age=0";
+  localStorage.clear();
+  sessionStorage.clear();
+  await new Promise(resolve => { const request = indexedDB.deleteDatabase("spec-db"); request.onsuccess = request.onerror = request.onblocked = resolve; });
+  refresh();
+  show("idb-value", "none");
+});
+
+const now = new Date();
+show("now-year", String(now.getFullYear()));
+show("now-iso", now.toISOString());
+show("locale", navigator.language);
+show("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
+show("number-format", new Intl.NumberFormat(navigator.language).format(1234567.89));
+show("scheme", matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+show("motion", matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduce" : "no-preference");
+const online = () => show("online", String(navigator.onLine));
+addEventListener("online", online);
+addEventListener("offline", online);
+online();
+refresh();
+</script>
+</body>
+</html>

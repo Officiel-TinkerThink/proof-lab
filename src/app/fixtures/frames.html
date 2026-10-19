@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: frames and shadow DOM</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:44rem}iframe{display:block;margin:.5rem 0;border:1px solid #888}</style>
+</head>
+<body>
+<h1>Frames and shadow DOM</h1>
+
+<iframe id="child" name="child" title="Child frame" src="/fixtures/nav-b.html" width="420" height="140"></iframe>
+
+<iframe id="inline" title="Inline frame" width="420" height="140" srcdoc="<!doctype html><html lang='en'><head><title>inline</title></head><body><label for='x'>Frame field</label> <input id='x' type='text'> <button id='echo' type='button'>Echo</button><p id='out'>empty</p><script>document.getElementById('echo').addEventListener('click',function(){document.getElementById('out').textContent=document.getElementById('x').value;});</script></body></html>"></iframe>
+
+<div id="open-host"></div>
+<div id="closed-host"></div>
+<p>Closed shadow root says: <span data-testid="closed-out">idle</span></p>
+
+<script>
+// Open shadow root: locators pierce it.
+const openRoot = document.getElementById("open-host").attachShadow({ mode: "open" });
+openRoot.innerHTML = '<button id="shadow-btn" type="button">Shadow button</button> <span data-testid="shadow-out">idle</span>';
+openRoot.getElementById("shadow-btn").addEventListener("click", () => {
+  openRoot.querySelector("[data-testid=shadow-out]").textContent = "clicked";
+});
+
+// Closed shadow root: not reachable from locators or from outside script; the page reports the click itself.
+const closedRoot = document.getElementById("closed-host").attachShadow({ mode: "closed" });
+closedRoot.innerHTML = '<button type="button">Closed button</button>';
+closedRoot.querySelector("button").addEventListener("click", () => {
+  document.querySelector("[data-testid=closed-out]").textContent = "clicked";
+});
+</script>
+</body>
+</html>

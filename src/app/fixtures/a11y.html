@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixture: accessible page</title>
+<style>
+  body{font:16px system-ui;margin:0;color:#222;background:#fff}
+  header,main,footer{padding:1rem 2rem}
+  .mobile-menu{display:none}
+  @media (max-width: 600px){.desktop-nav{display:none}.mobile-menu{display:inline-block}}
+  [role=dialog]{border:2px solid #222;padding:1rem;margin:1rem 0;background:#fff}
+</style>
+</head>
+<body>
+<header>
+  <h1>Accessible fixture</h1>
+  <nav class="desktop-nav" aria-label="Main"><a href="#one">One</a> <a href="#two">Two</a></nav>
+  <button class="mobile-menu" type="button" aria-label="Open menu">Menu</button>
+</header>
+<main>
+  <h2>Controls</h2>
+  <div>
+    <button id="toggle" type="button" aria-expanded="false" aria-controls="panel">Details</button>
+    <div id="panel" hidden>Panel text</div>
+  </div>
+  <div>
+    <button id="announce" type="button">Announce</button>
+    <div role="status" aria-live="polite" data-testid="live"></div>
+  </div>
+  <div>
+    <button id="open-dialog" type="button">Open dialog</button>
+    <div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-title" hidden>
+      <h2 id="dlg-title">Confirm</h2>
+      <p>Close this dialog with the button or Escape.</p>
+      <button id="dlg-close" type="button">Close</button>
+    </div>
+  </div>
+  <div>
+    <label for="email">Email</label> <input id="email" type="email" autocomplete="email">
+  </div>
+  <img alt="Company logo" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+  <p>Layout: <span data-testid="layout">desktop</span></p>
+</main>
+<footer>Footer text</footer>
+<script>
+const $ = selector => document.querySelector(selector);
+
+const toggle = $("#toggle");
+toggle.addEventListener("click", () => {
+  const open = toggle.getAttribute("aria-expanded") !== "true";
+  toggle.setAttribute("aria-expanded", String(open));
+  $("#panel").hidden = !open;
+});
+
+$("#announce").addEventListener("click", () => {
+  setTimeout(() => { $("[data-testid=live]").textContent = "Saved"; }, 100);
+});
+
+const dialog = $("#dlg");
+const opener = $("#open-dialog");
+const closeDialog = () => { dialog.hidden = true; opener.focus(); };
+opener.addEventListener("click", () => { dialog.hidden = false; $("#dlg-close").focus(); });
+$("#dlg-close").addEventListener("click", closeDialog);
+dialog.addEventListener("keydown", event => { if (event.key === "Escape") closeDialog(); });
+
+const query = matchMedia("(max-width: 600px)");
+const layout = () => { $("[data-testid=layout]").textContent = query.matches ? "mobile" : "desktop"; };
+query.addEventListener("change", layout);
+layout();
+</script>
+</body>
+</html>

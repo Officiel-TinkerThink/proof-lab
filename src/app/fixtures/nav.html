@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: navigation</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:44rem}nav a,nav button{margin-right:1rem}</style>
+</head>
+<body>
+<h1>Navigation</h1>
+<nav aria-label="Links">
+  <a href="/fixtures/nav-b.html">Go to page B</a>
+  <a href="/fixtures/nav-b.html" target="_blank">Open B in new tab</a>
+  <button id="popup" type="button">Open popup</button>
+  <a href="#/one">Route one</a>
+  <a href="#/two">Route two</a>
+  <button id="push" type="button">Push state</button>
+  <a href="/api/redirect">Redirect link</a>
+  <a href="/api/status/404">Missing link</a>
+  <a href="/api/status/500">Broken link</a>
+  <a href="mailto:ada@example.test">Email Ada</a>
+</nav>
+<p>Route: <span data-testid="route">none</span></p>
+<p>Step: <span data-testid="step">0</span></p>
+<script>
+const route = document.querySelector("[data-testid=route]");
+const step = document.querySelector("[data-testid=step]");
+const syncRoute = () => { route.textContent = location.hash || "none"; };
+const syncStep = () => { step.textContent = new URLSearchParams(location.search).get("step") ?? "0"; };
+
+addEventListener("hashchange", syncRoute);
+addEventListener("popstate", () => { syncRoute(); syncStep(); });
+document.getElementById("push").addEventListener("click", () => {
+  const next = Number(new URLSearchParams(location.search).get("step") ?? "0") + 1;
+  history.pushState({}, "", `?step=${next}`);
+  syncStep();
+});
+document.getElementById("popup").addEventListener("click", () => {
+  window.open("/fixtures/nav-b.html", "popup", "width=400,height=300");
+});
+syncRoute();
+syncStep();
+</script>
+</body>
+</html>

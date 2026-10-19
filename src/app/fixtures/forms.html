@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: forms</title>
+<link rel="icon" href="data:,">
+<style>body{font:16px system-ui;margin:2rem;max-width:40rem}.row{margin:.5rem 0}</style>
+</head>
+<body>
+<h1>Form controls</h1>
+<form id="f">
+  <div class="row"><label for="name">Name</label> <input id="name" name="name" type="text" autocomplete="off"></div>
+  <div class="row"><label for="bio">Bio</label> <textarea id="bio" name="bio"></textarea></div>
+  <div class="row"><label for="password">Password</label> <input id="password" name="password" type="password"></div>
+  <div class="row"><label for="contact">Contact email</label> <input id="contact" name="contact" type="email" required></div>
+  <div class="row"><label for="age">Age</label> <input id="age" name="age" type="number" min="0" max="120"></div>
+  <div class="row"><label><input type="checkbox" name="subscribe"> Subscribe</label></div>
+  <fieldset class="row">
+    <legend>Plan</legend>
+    <label><input type="radio" name="plan" value="free"> Free</label>
+    <label><input type="radio" name="plan" value="pro"> Pro</label>
+  </fieldset>
+  <div class="row"><label for="country">Country</label>
+    <select id="country" name="country">
+      <option value="">Choose</option><option value="ID">Indonesia</option>
+      <option value="NL">Netherlands</option><option value="US">United States</option>
+    </select></div>
+  <div class="row"><label for="tags">Tags</label>
+    <select id="tags" name="tags" multiple>
+      <option value="a">Alpha</option><option value="b">Beta</option><option value="c">Gamma</option>
+    </select></div>
+  <div class="row"><label for="birthday">Birthday</label> <input id="birthday" name="birthday" type="date"></div>
+  <div class="row"><label for="alarm">Alarm</label> <input id="alarm" name="alarm" type="time"></div>
+  <div class="row"><label for="when">Meeting</label> <input id="when" name="when" type="datetime-local"></div>
+  <div class="row"><label for="color">Theme color</label> <input id="color" name="color" type="color" value="#336699"></div>
+  <div class="row"><label for="volume">Volume</label>
+    <input id="volume" name="volume" type="range" min="0" max="10" value="5">
+    <output data-testid="volume-out">5</output></div>
+  <div class="row"><label for="avatar">Avatar</label> <input id="avatar" name="avatar" type="file">
+    <span data-testid="avatar-name">none</span></div>
+  <div class="row"><label for="locked">Locked</label> <input id="locked" type="text" value="fixed" disabled></div>
+  <div class="row"><label for="ref">Reference</label> <input id="ref" type="text" value="R-1" readonly></div>
+  <div class="row"><span id="notes-label">Notes</span>
+    <div id="notes" role="textbox" aria-labelledby="notes-label" contenteditable="true" style="border:1px solid #888;min-height:1.5rem"></div></div>
+  <button type="submit">Send</button>
+  <button type="reset">Reset</button>
+</form>
+<pre data-testid="result">not submitted</pre>
+<script>
+const form = document.getElementById("f");
+const result = document.querySelector("[data-testid=result]");
+const volumeOut = document.querySelector("[data-testid=volume-out]");
+const avatarName = document.querySelector("[data-testid=avatar-name]");
+const notes = document.getElementById("notes");
+
+document.getElementById("volume").addEventListener("input", event => { volumeOut.textContent = event.target.value; });
+document.getElementById("avatar").addEventListener("change", event => {
+  avatarName.textContent = event.target.files[0]?.name ?? "none";
+});
+
+// Only fires when the browser's own constraint validation passes (contact is required and must be an email).
+form.addEventListener("submit", event => {
+  event.preventDefault();
+  const data = new FormData(form);
+  const out = {};
+  for (const key of new Set(data.keys())) {
+    const values = data.getAll(key).map(value => (value instanceof File ? value.name : value));
+    out[key] = key === "tags" || values.length > 1 ? values : values[0];
+  }
+  out.notes = notes.textContent;
+  result.textContent = JSON.stringify(out);
+});
+
+form.addEventListener("reset", () => {
+  result.textContent = "not submitted";
+  volumeOut.textContent = "5";
+  avatarName.textContent = "none";
+  notes.textContent = "";
+});
+</script>
+</body>
+</html>

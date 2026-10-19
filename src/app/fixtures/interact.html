@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: interaction</title>
+<style>
+  body{font:16px system-ui;margin:2rem;max-width:44rem}
+  .box{border:1px solid #888;padding:.5rem;margin:.5rem 0}
+  #drag{display:inline-block;padding:.5rem;background:#cde;cursor:grab}
+  #drop{display:inline-block;padding:1rem;border:2px dashed #888;margin-left:1rem}
+  #scroller{height:100px;overflow:auto;border:1px solid #888}
+  #spacer{height:1500px}
+</style>
+</head>
+<body>
+<h1>Interaction</h1>
+
+<div class="box">
+  <button id="plain" type="button">Click me</button> clicks: <span data-testid="clicks">0</span>
+</div>
+
+<div class="box">
+  <div id="dbl" role="button" tabindex="0" aria-label="Double target">Double-click me</div>
+  double-clicks: <span data-testid="dblclicks">0</span>
+</div>
+
+<div class="box">
+  <div id="ctx" tabindex="0">Right-click me</div>
+  <ul id="menu" role="menu" hidden><li role="menuitem">Rename</li></ul>
+  menu: <span data-testid="ctx-state">closed</span>
+</div>
+
+<div class="box">
+  <div id="hover" tabindex="0">Hover me</div> hover: <span data-testid="hover-state">idle</span>
+</div>
+
+<div class="box">
+  <label for="keys">Key logger</label> <input id="keys" type="text" autocomplete="off">
+  key: <span data-testid="last-key">none</span> modifiers: <span data-testid="last-mods">none</span>
+</div>
+
+<div class="box">
+  <input id="t1" type="text" aria-label="First"> <input id="t2" type="text" aria-label="Second">
+  <input id="t3" type="text" aria-label="Third"> focused: <span data-testid="focused">none</span>
+</div>
+
+<div class="box">
+  <button id="mod" type="button">Modifier click</button> modifiers held: <span data-testid="mod-state">none</span>
+</div>
+
+<div class="box">
+  <div id="drag" draggable="true">Drag me</div><div id="drop">Drop here</div>
+  drag: <span data-testid="drop-state">waiting</span>
+</div>
+
+<div class="box">
+  <div id="scroller" tabindex="0" aria-label="Scrollable list">
+    <ul id="list"></ul>
+  </div>
+  scrollTop: <span data-testid="scroll-top">0</span>
+</div>
+
+<div id="spacer" aria-hidden="true"></div>
+<button id="far" type="button">Far button</button> <span data-testid="far-state">untouched</span>
+
+<script>
+const $ = selector => document.querySelector(selector);
+const count = (selector, key) => { const el = $(selector); el.textContent = String(Number(el.textContent) + 1); };
+
+$("#plain").addEventListener("click", () => count("[data-testid=clicks]"));
+$("#dbl").addEventListener("dblclick", () => count("[data-testid=dblclicks]"));
+
+const menu = $("#menu");
+$("#ctx").addEventListener("contextmenu", event => {
+  event.preventDefault();
+  menu.hidden = false;
+  $("[data-testid=ctx-state]").textContent = "open";
+});
+document.addEventListener("click", () => {
+  menu.hidden = true;
+  $("[data-testid=ctx-state]").textContent = "closed";
+});
+
+const hoverState = $("[data-testid=hover-state]");
+$("#hover").addEventListener("mouseenter", () => { hoverState.textContent = "hovered"; });
+$("#hover").addEventListener("mouseleave", () => { hoverState.textContent = "idle"; });
+
+const modifiersOf = event => ["Shift", "Control", "Alt", "Meta"].filter(name => event.getModifierState(name)).join("+") || "none";
+$("#keys").addEventListener("keydown", event => {
+  $("[data-testid=last-key]").textContent = event.key;
+  $("[data-testid=last-mods]").textContent = modifiersOf(event);
+});
+$("#mod").addEventListener("click", event => { $("[data-testid=mod-state]").textContent = modifiersOf(event); });
+
+document.addEventListener("focusin", event => { $("[data-testid=focused]").textContent = event.target.id || event.target.tagName; });
+
+// HTML5 drag and drop: dragover must be cancelled for drop to fire.
+$("#drag").addEventListener("dragstart", event => { event.dataTransfer.setData("text/plain", "drag"); });
+$("#drop").addEventListener("dragover", event => event.preventDefault());
+$("#drop").addEventListener("drop", event => {
+  event.preventDefault();
+  $("[data-testid=drop-state]").textContent = "dropped";
+});
+
+for (let i = 1; i <= 40; i++) {
+  const item = document.createElement("li");
+  item.textContent = i === 40 ? "Last item" : `Item ${i}`;
+  $("#list").append(item);
+}
+$("#scroller").addEventListener("scroll", () => {
+  $("[data-testid=scroll-top]").textContent = String(Math.round($("#scroller").scrollTop));
+});
+
+$("#far").addEventListener("click", () => { $("[data-testid=far-state]").textContent = "clicked"; });
+</script>
+</body>
+</html>

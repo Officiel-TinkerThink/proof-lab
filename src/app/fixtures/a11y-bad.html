@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>body{font:16px system-ui;background:#fff}.faint{color:#aaa}</style>
+</head>
+<body>
+<!-- Deliberate accessibility defects, so an audit has something to find. Do not fix. -->
+<h1>Inaccessible fixture</h1>
+<h4>Skipped heading level</h4>
+<img id="no-alt" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+<button id="unnamed" type="button"></button>
+<input id="unlabelled" type="text">
+<p id="dup">First duplicate id</p>
+<p id="dup">Second duplicate id</p>
+<p class="faint">Low contrast text</p>
+<a href="#top"></a>
+</body>
+</html>

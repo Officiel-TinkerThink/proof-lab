@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: network and errors</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:44rem}.row{margin:.6rem 0}</style>
+</head>
+<body>
+<h1>Network and errors</h1>
+
+<div class="row">
+  <button id="load" type="button">Load items</button> <span data-testid="items-state">idle</span>
+  <ul id="items"></ul>
+</div>
+<div class="row">
+  <button id="slow" type="button">Slow load</button> <span data-testid="slow-state">idle</span>
+</div>
+<div class="row">
+  <button id="broken" type="button">Broken call</button> <span data-testid="broken-state">idle</span>
+</div>
+<div class="row">
+  <button id="echo" type="button">Post echo</button> <span data-testid="echo-state">idle</span>
+</div>
+<div class="row">
+  <button id="count" type="button">Count once</button> <span data-testid="count-state">idle</span>
+</div>
+
+<div class="row">
+  <button id="throw" type="button">Throw error</button>
+  <button id="log-error" type="button">Log error</button>
+  <button id="log-warn" type="button">Log warning</button>
+  <button id="reject" type="button">Reject</button>
+</div>
+<img src="/missing-image.png" alt="Missing image">
+
+<script>
+const $ = selector => document.querySelector(selector);
+const show = (id, value) => { $(`[data-testid=${id}]`).textContent = value; };
+
+$("#load").addEventListener("click", async () => {
+  show("items-state", "loading");
+  try {
+    const response = await fetch("/api/items");
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const items = await response.json();
+    $("#items").innerHTML = items.map(item => `<li>${item.name}</li>`).join("");
+    show("items-state", "loaded");
+  } catch (error) {
+    $("#items").innerHTML = "";
+    show("items-state", `error: ${error.message}`);
+  }
+});
+
+$("#slow").addEventListener("click", async () => {
+  show("slow-state", "loading");
+  await fetch("/api/slow?ms=1500");
+  show("slow-state", "done");
+});
+
+$("#broken").addEventListener("click", async () => {
+  const response = await fetch("/api/status/500");
+  show("broken-state", `status ${response.status}`);
+});
+
+$("#echo").addEventListener("click", async () => {
+  const response = await fetch("/api/echo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hello: "world" }),
+  });
+  show("echo-state", JSON.stringify((await response.json()).body));
+});
+
+$("#count").addEventListener("click", async () => {
+  const response = await fetch("/api/count", { method: "POST", headers: { "X-Proof-Lab": "1" } });
+  show("count-state", String((await response.json()).count));
+});
+
+$("#throw").addEventListener("click", () => { setTimeout(() => { throw new Error("boom"); }, 0); });
+$("#log-error").addEventListener("click", () => console.error("logged error"));
+$("#log-warn").addEventListener("click", () => console.warn("logged warning"));
+$("#reject").addEventListener("click", () => { Promise.reject(new Error("unhandled rejection")); });
+</script>
+</body>
+</html>

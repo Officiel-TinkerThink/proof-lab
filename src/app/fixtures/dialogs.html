@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: dialogs, files and permissions</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:44rem}.row{margin:.6rem 0}</style>
+</head>
+<body>
+<h1>Dialogs, files and permissions</h1>
+
+<div class="row">
+  <button id="alert" type="button">Alert</button> <span data-testid="alert-state">idle</span>
+</div>
+<div class="row">
+  <button id="confirm" type="button">Confirm</button> <span data-testid="confirm-result">none</span>
+</div>
+<div class="row">
+  <button id="prompt" type="button">Prompt</button> <span data-testid="prompt-result">none</span>
+</div>
+<div class="row">
+  <label><input id="warn" type="checkbox"> Warn on leave</label>
+</div>
+
+<div class="row">
+  <a href="/download/hello.txt" download>Download hello</a>
+</div>
+<div class="row">
+  <label for="pick">Pick file</label> <input id="pick" type="file">
+  name: <span data-testid="file-name">none</span>
+  content: <span data-testid="file-content">none</span>
+</div>
+<div class="row">
+  <button id="chooser" type="button">Choose file</button> <span data-testid="chooser-name">none</span>
+</div>
+
+<div class="row">
+  <button id="copy" type="button">Copy</button> <span data-testid="clipboard-status">idle</span>
+</div>
+<div class="row">
+  <button id="paste" type="button">Paste</button> <span data-testid="paste-result">none</span>
+</div>
+<div class="row">
+  <button id="locate" type="button">Locate me</button> <span data-testid="geo-result">none</span>
+</div>
+<div class="row">
+  <button id="notify" type="button">Notify</button> <span data-testid="notify-permission">none</span>
+</div>
+
+<script>
+const $ = selector => document.querySelector(selector);
+const show = (id, value) => { $(`[data-testid=${id}]`).textContent = value; };
+
+$("#alert").addEventListener("click", () => { alert("Hello alert"); show("alert-state", "closed"); });
+$("#confirm").addEventListener("click", () => { show("confirm-result", String(confirm("Delete item?"))); });
+$("#prompt").addEventListener("click", () => {
+  const answer = prompt("Your name?", "anon");
+  show("prompt-result", answer === null ? "cancelled" : answer);
+});
+$("#warn").addEventListener("change", event => {
+  window.onbeforeunload = event.target.checked ? e => { e.preventDefault(); e.returnValue = ""; } : null;
+});
+
+$("#pick").addEventListener("change", event => {
+  const file = event.target.files[0];
+  show("file-name", file ? file.name : "none");
+  if (!file) return show("file-content", "none");
+  const reader = new FileReader();
+  reader.onload = () => show("file-content", String(reader.result).trim());
+  reader.readAsText(file);
+});
+
+// A file input created in script and clicked: this is the path that raises a file chooser.
+$("#chooser").addEventListener("click", () => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.addEventListener("change", () => show("chooser-name", input.files[0]?.name ?? "none"));
+  input.click();
+});
+
+$("#copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText("copied text"); show("clipboard-status", "copied"); }
+  catch (error) { show("clipboard-status", `error: ${error.name}`); }
+});
+$("#paste").addEventListener("click", async () => {
+  try { show("paste-result", await navigator.clipboard.readText()); }
+  catch (error) { show("paste-result", `error: ${error.name}`); }
+});
+
+$("#locate").addEventListener("click", () => {
+  navigator.geolocation.getCurrentPosition(
+    position => show("geo-result", `${position.coords.latitude},${position.coords.longitude}`),
+    error => show("geo-result", `error: ${error.code}`),
+  );
+});
+$("#notify").addEventListener("click", async () => {
+  show("notify-permission", await Notification.requestPermission());
+});
+</script>
+</body>
+</html>

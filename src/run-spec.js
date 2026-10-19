@@ -1,137 +1,109 @@
-// run-spec: drive an app through a JSON spec, record every assertion, write a signed receipt.
-// Verdicts: PASS (exit 0), FAIL (exit 1: an assertion failed), ERROR (exit 2: the run could not finish).
-// Usage: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>]
+// run-spec: drive an app through a JSON spec, record every check, write a signed summary receipt and an evidence file.
+// Verdicts: PASS (exit 0), FAIL (exit 1: a check failed), ERROR (exit 2: the run could not finish).
+// Usage: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]
+// The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { startApp } from "./server.js";
 import { environmentWithoutKey, fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
+import { clipValue, evidenceText, summarize, summarizePageErrors } from "./spec/evidence.js";
+import { describeTarget } from "./spec/locate.js";
+import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
+import { validateSpec } from "./spec/schema.js";
+import { STEPS } from "./spec/steps.js";
+import { firstLine } from "./spec/util.js";
+
+export { validateSpec };
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts");
-const TIMEOUT_MS = 3000;
+const EXIT = { PASS: 0, FAIL: 1, ERROR: 2 };
+const MAX_CONSOLE_RECORDS = 500;
+const MAX_FAILURE_CONTEXTS = 5;
+const ARIA_CHARS = 8000;
 
-// Required fields per op. fill, click and assertText have extra either/or rules in validateSpec.
-const OPS = {
-  goto: ["url"],
-  fill: ["value"],
-  click: [],
-  press: ["key"],
-  waitFor: ["selector"],
-  reload: [],
-  assertText: ["selector"],
-  assertVisible: ["selector"],
-  assertStorage: ["key", "equals"],
-};
-
-const firstLine = error => (error instanceof Error ? error.message : String(error)).split("\n")[0];
-
-export function validateSpec(spec) {
-  if (!spec || typeof spec !== "object" || Array.isArray(spec)) return ["spec must be a JSON object"];
-  const problems = [];
-  if (typeof spec.name !== "string" || spec.name.trim() === "") problems.push("name must be a non-empty string");
-  if (spec.app !== undefined && (typeof spec.app !== "object" || spec.app === null)) problems.push("app must be an object");
-  if (!Array.isArray(spec.steps) || spec.steps.length === 0) {
-    problems.push("steps must be a non-empty array");
-    return problems;
-  }
-  spec.steps.forEach((step, i) => {
-    const at = `steps[${i}]`;
-    if (!step || typeof step !== "object") return problems.push(`${at} must be an object`);
-    if (!Object.hasOwn(OPS, step.op)) return problems.push(`${at}.op "${step.op}" is not one of ${Object.keys(OPS).join(", ")}`);
-    for (const field of OPS[step.op]) {
-      if (step[field] === undefined) problems.push(`${at} (${step.op}) needs "${field}"`);
-    }
-    if (step.op === "fill" && !step.label && !step.selector) problems.push(`${at} (fill) needs "label" or "selector"`);
-    if (step.op === "click" && !(step.role && step.name) && !step.selector) {
-      problems.push(`${at} (click) needs "role" with "name", or "selector"`);
-    }
-    if (step.op === "assertText" && (step.equals === undefined) === (step.contains === undefined)) {
-      problems.push(`${at} (assertText) needs exactly one of "equals" or "contains"`);
-    }
-  });
-  return problems;
+// "check" names the step in the receipt. "name" without a role is the older spelling of it.
+function labelOf(step, index) {
+  if (step.check !== undefined) return step.check;
+  if (step.name !== undefined && step.role === undefined) return step.name;
+  return `step ${index}: ${step.op} ${describeTarget(step)}`.trim();
 }
 
-function locate(page, step) {
-  if (step.role) return page.getByRole(step.role, { name: step.name, exact: true });
-  if (step.label) return page.getByLabel(step.label, { exact: true });
-  return page.locator(step.selector);
+function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
+  const ctx = {
+    page, appUrl, specDir, timeoutMs, checks, index: 0,
+    record(step, pass, expected, actual, error) {
+      // An optional step is allowed to fail: it leaves no failed check (the evidence timeline still shows it).
+      if (!pass && step.optional) return;
+      const check = { step: ctx.index, name: labelOf(step, ctx.index), pass, expected, actual };
+      if (!pass && step.hint) check.hint = step.hint;
+      if (!pass && error) check.error = error;
+      checks.push(check);
+    },
+  };
+  return ctx;
 }
 
-const readValue = (object, path) => (path ? path.split(".").reduce((node, part) => node?.[part], object) : object);
-
-// One step. Assertions record a check. A failed action (missing element, timeout) is recorded as a failed check too,
-// because the app did not allow the step; the run goes on so the receipt shows every failure.
-async function runStep(page, step, index, appUrl, checks) {
-  const target = step.selector ?? (step.label ? `label ${step.label}` : step.name ?? "");
-  const label = step.name ?? `step ${index}: ${step.op} ${target}`.trim();
-  const record = (pass, expected, actual, hint) => checks.push({ name: label, pass, expected, actual, ...(hint && !pass ? { hint } : {}) });
-  const hint = step.hint;
+// A step the page did not allow is a failed check, not an ERROR: the run goes on so the receipt lists every failure.
+async function runStep(ctx, step) {
+  const first = ctx.checks.length;
+  const started = performance.now();
+  const record = { type: "step", step: ctx.index, op: step.op, check: labelOf(step, ctx.index) };
+  const target = describeTarget(step);
+  if (target) record.target = target;
   try {
-    switch (step.op) {
-      case "goto":
-        await page.goto(new URL(step.url, appUrl).href, { waitUntil: "load" });
-        return;
-      case "fill":
-        await locate(page, step).fill(step.value);
-        return;
-      case "click":
-        await locate(page, step).click();
-        return;
-      case "press":
-        await page.keyboard.press(step.key);
-        return;
-      case "waitFor":
-        // optional: a missed wait is not a failed check; the assertion after it decides (as in prove.js).
-        await page.locator(step.selector).filter(step.hasText ? { hasText: step.hasText } : {}).first()
-          .waitFor({ state: "visible" })
-          .catch(error => { if (!step.optional) throw error; });
-        return;
-      case "reload":
-        await page.reload({ waitUntil: "load" });
-        return;
-      case "assertText": {
-        const exists = (await page.locator(step.selector).count()) > 0;
-        const actual = exists ? (await page.locator(step.selector).first().innerText()).trim() : null;
-        const pass = step.equals !== undefined ? actual === step.equals : (actual ?? "").includes(step.contains);
-        record(pass, step.equals ?? `contains ${JSON.stringify(step.contains)}`, actual, hint);
-        return;
-      }
-      case "assertVisible": {
-        const actual = await page.locator(step.selector).first().isVisible().catch(() => false);
-        record(actual === true, true, actual, hint);
-        return;
-      }
-      case "assertStorage": {
-        const raw = await page.evaluate(key => localStorage.getItem(key), step.key);
-        let parsed = null;
-        try { parsed = raw === null ? null : JSON.parse(raw); } catch { parsed = raw; }
-        const actual = readValue(parsed, step.path) ?? null;
-        record(JSON.stringify(actual) === JSON.stringify(step.equals), step.equals, actual, hint);
-        return;
-      }
-      default:
-        throw new Error(`unknown op ${step.op}`);
-    }
+    await STEPS[step.op](ctx, step);
   } catch (error) {
-    const isAssert = step.op.startsWith("assert");
-    if (isAssert) {
-      record(false, step.equals ?? step.contains ?? true, null, hint);
+    if (step.optional) {
+      record.skipped = firstLine(error);
     } else {
-      record(false, `${step.op} completes`, firstLine(error), hint ?? `The app did not allow step ${index} (${step.op} ${target}).`);
+      const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op} ${target}).`.replace(/ \)/, ")");
+      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, firstLine(error));
     }
-    checks.at(-1).error = firstLine(error);
   }
+  record.ms = Math.round(performance.now() - started);
+  record.ok = ctx.checks.slice(first).every(check => check.pass);
+  return record;
 }
 
-// Runs one spec file. Returns the receipt. An invalid spec returns ERROR and writes no receipt.
+// What the page looked like when a check failed: the address, the title, and the accessibility tree (what an agent
+// "sees"). The first failure also gets a small picture.
+async function captureContext(page, step, withPicture) {
+  const context = { type: "context", step, url: null, title: null, aria: null };
+  const records = [context];
+  try {
+    context.url = page.url();
+    context.title = await page.title();
+  } catch { /* the page may be gone */ }
+  try {
+    context.aria = clipValue(await page.locator("body").ariaSnapshot({ timeout: 2000 }), ARIA_CHARS);
+  } catch (error) {
+    context.ariaError = firstLine(error);
+  }
+  if (withPicture) {
+    try {
+      const jpeg = await page.screenshot({ type: "jpeg", quality: 60, timeout: 3000 });
+      records.push({ type: "screenshot", step, mime: "image/jpeg", base64: jpeg.toString("base64") });
+    } catch { /* no picture is not a failure */ }
+  }
+  return records;
+}
+
+// Runs one spec file. Returns the receipt as stored, plus a non-stored `detail` (the evidence, in memory).
+// An invalid spec returns ERROR and writes nothing.
 export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } = {}) {
   const receipt = {
     verdict: "ERROR", app: null, bug: null, spec: null, revision: null, at: fixedStamp(),
-    checks: [], pageErrors: [], screenshot: null, error: null, next: [],
+    totals: null, checks: [], evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
+  };
+  const refuse = message => {
+    receipt.error = message;
+    receipt.next = [message, "Fix the spec file and run again. Nothing was written."];
+    return receipt;
   };
 
   let spec;
@@ -140,23 +112,29 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     text = await readFile(specPath, "utf8");
     spec = JSON.parse(text);
   } catch (error) {
-    receipt.error = `spec could not be read or parsed: ${firstLine(error)}`;
-    receipt.next = [receipt.error, "Fix the spec file and run again. No receipt was written."];
-    return receipt;
+    return refuse(`spec could not be read or parsed: ${firstLine(error)}`);
   }
-  const problems = validateSpec(spec);
-  if (problems.length > 0) {
-    receipt.error = `invalid spec: ${problems.join("; ")}`;
-    receipt.next = [receipt.error, "Fix the spec file and run again. No receipt was written."];
-    return receipt;
+  let problems;
+  try {
+    problems = validateSpec(spec);
+  } catch (error) {
+    problems = [`the validator failed: ${firstLine(error)}`];
   }
+  if (problems.length > 0) return refuse(`invalid spec: ${problems.join("; ")}`);
 
   receipt.spec = `${spec.name}@${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
   receipt.bug = spec.app?.bug ?? null;
+  const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pageErrors = new Set();
+  const consoleRecords = [];
+  let consoleDropped = 0;
+  const stepRecords = [];
+  const contextRecords = [];
+  const checks = [];
   let server = null;
   let browser = null;
   let shot = null;
+  let browserVersion = null;
 
   try {
     if (spec.app?.url) {
@@ -166,38 +144,55 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       receipt.app = server.url;
     }
     browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
+    browserVersion = `chromium ${browser.version()}`;
     const context = await browser.newContext(); // fresh visitor: no storage
     const page = await context.newPage();
-    page.setDefaultTimeout(TIMEOUT_MS);
+    page.setDefaultTimeout(timeoutMs);
+    page.setDefaultNavigationTimeout(Math.max(timeoutMs, 10000));
     page.on("pageerror", error => pageErrors.add(error.message));
-    page.on("console", message => { if (message.type() === "error") pageErrors.add(message.text()); });
+    page.on("console", message => {
+      if (message.type() === "error") pageErrors.add(message.text());
+      if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level: message.type(), text: clipValue(message.text(), 1000) });
+      else consoleDropped += 1;
+    });
 
-    await page.goto(receipt.app, { waitUntil: "load" });
+    // Without app.start the run opens the app exactly as given (an app.url with a path keeps its path).
+    const firstUrl = spec.app?.start === undefined ? receipt.app : new URL(spec.app.start, receipt.app).href;
+    await page.goto(firstUrl, { waitUntil: "load" });
+    const landed = new URL(page.url()); // after any redirect: the page whose revision is recorded
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
+    const ctx = createContext({ page, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
     for (const [i, step] of spec.steps.entries()) {
-      await runStep(page, step, i + 1, receipt.app, receipt.checks);
+      ctx.index = i + 1;
+      const first = checks.length;
+      stepRecords.push(await runStep(ctx, step));
+      if (checks.slice(first).some(check => !check.pass) && contextRecords.filter(r => r.type === "context").length < MAX_FAILURE_CONTEXTS) {
+        contextRecords.push(...await captureContext(ctx.page, ctx.index, !contextRecords.some(r => r.type === "screenshot")));
+      }
     }
     if (spec.noPageErrors === true) {
-      receipt.checks.push({
-        name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: [...pageErrors],
-        ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read pageErrors in the receipt." } : {}),
+      checks.push({
+        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: [...pageErrors],
+        ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read the console records in the evidence file." } : {}),
       });
     }
 
-    if (server) {
-      const response = await fetch(new URL("/__revision", receipt.app), { signal: AbortSignal.timeout(2000) });
+    // The built-in app can change on disk during a run; evidence from two builds proves neither.
+    // Only a page that carries a revision can be compared, and only on the origin the server serves.
+    if (server && receipt.revision !== null && landed.origin === new URL(receipt.app).origin) {
+      const query = landed.pathname.startsWith("/fixtures/") ? `?path=${encodeURIComponent(landed.pathname)}` : "";
+      const response = await fetch(new URL(`/__revision${query}`, receipt.app), { signal: AbortSignal.timeout(2000) });
       const now = (await response.json()).revision;
       if (now !== receipt.revision) {
         throw new Error(`the app changed while running (loaded ${receipt.revision}, now ${now}); evidence from two builds proves neither`);
       }
     }
-    shot = await page.screenshot({ fullPage: true });
-    if (receipt.checks.length === 0) {
+    shot = await ctx.page.screenshot({ fullPage: true });
+    if (checks.length === 0) {
       receipt.error = "No checks were recorded. Add assertions to the spec.";
-      receipt.verdict = "ERROR";
     } else {
-      receipt.verdict = receipt.checks.every(check => check.pass) ? "PASS" : "FAIL";
+      receipt.verdict = checks.every(check => check.pass) ? "PASS" : "FAIL";
     }
   } catch (error) {
     receipt.verdict = "ERROR";
@@ -207,54 +202,86 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     if (server) await server.close().catch(() => {});
   }
 
-  receipt.pageErrors = [...pageErrors];
+  const { totals, failures } = summarize(checks);
+  receipt.totals = totals;
+  receipt.checks = failures;
+  receipt.pageErrors = summarizePageErrors([...pageErrors]);
   if (receipt.verdict === "PASS") {
     receipt.next = ["These checks passed on this revision. They cover nothing else: read the screenshot for anything they missed."];
   } else if (receipt.verdict === "FAIL") {
-    receipt.next = receipt.checks.filter(check => !check.pass).map(check =>
-      check.hint ?? `Fix "${check.name}": expected ${JSON.stringify(check.expected)}, got ${JSON.stringify(check.actual)}.`);
+    receipt.next = failures.map(check =>
+      check.hint ?? `Fix "${check.name}" (step ${check.step}): expected ${JSON.stringify(check.expected)}, got ${JSON.stringify(check.actual)}.`);
+    if (totals.omitted > 0) receipt.next.push(`${totals.omitted} more failed checks are in the evidence file.`);
   } else {
     receipt.next = [receipt.error ?? "Unknown error.", "Can't tell is not the same as broken: run it again once the app is stable."];
   }
 
+  const records = [
+    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion },
+    ...stepRecords,
+    ...checks.map(check => ({ type: "check", ...check })),
+    ...contextRecords,
+    ...consoleRecords,
+    ...(consoleDropped > 0 ? [{ type: "console-truncated", dropped: consoleDropped }] : []),
+    ...[...pageErrors].map(message => ({ type: "pageerror", message })),
+    { type: "summary", verdict: receipt.verdict, totals, error: receipt.error },
+  ];
+  const detail = { checks, steps: stepRecords, contexts: contextRecords, console: consoleRecords, pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
+
   // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
   try {
-    await writeReceipt(receipt, { shot, key, dir: receiptsDir });
+    const paths = await writeReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir });
+    detail.receiptPath = paths.receiptPath;
+    detail.evidencePath = paths.evidencePath;
   } catch (error) {
     receipt.verdict = "ERROR";
     receipt.error = `receipt write failed: ${firstLine(error)}`;
     receipt.next = [receipt.error, "No receipt file was written, so this run is not evidence. Fix the receipts directory and run again."];
   }
+  Object.defineProperty(receipt, "detail", { value: detail, enumerable: false });
   return receipt;
 }
 
-const EXIT = { PASS: 0, FAIL: 1, ERROR: 2 };
-
-// CLI: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>]
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const args = process.argv.slice(2);
-  const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-  let key;
+function isMain() {
+  if (!process.argv[1]) return false;
   try {
-    if (process.env.PROOF_LAB_KEY !== undefined) {
-      throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
-    }
-    if (!flag("--key-file")) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
-    key = await signingKeyFromFile(flag("--key-file"));
-  } catch (error) {
-    console.error(`ERROR: ${firstLine(error)}`);
-    process.exitCode = 2;
+    // Real paths, so a symlink, a junction or a different drive-letter case still starts the CLI instead of exiting 0 silently.
+    return realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
-  if (key && flag("--spec")) {
-    const receipt = await runSpec({ specPath: flag("--spec"), key, receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS });
+}
+
+// CLI: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]
+async function main(args) {
+  const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+  if (process.env.PROOF_LAB_KEY !== undefined) {
+    throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
+  }
+  if (!flag("--key-file")) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
+  if (!flag("--spec")) throw new Error("--spec <file.json> is required");
+  const key = await signingKeyFromFile(flag("--key-file"));
+  const receipt = await runSpec({ specPath: flag("--spec"), key, receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS });
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ?? null, evidenceFile: receipt.detail?.evidencePath ?? null }, null, 2));
+  } else {
+    const totals = receipt.totals;
     console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());
-    for (const check of receipt.checks) {
-      console.log(`  ${check.pass ? "PASS" : "FAIL"} ${check.name}`);
-    }
+    if (totals) console.log(`  ${totals.checks} checks, ${totals.passed} passed, ${totals.failed} failed`);
+    for (const check of receipt.checks) console.log(`  FAIL step ${check.step}: ${check.name}`);
     if (receipt.error) console.log(`  error: ${receipt.error}`);
-    process.exitCode = EXIT[receipt.verdict];
-  } else if (key) {
-    console.error("ERROR: --spec <file.json> is required");
+    if (receipt.detail?.receiptPath) console.log(`  receipt:  ${receipt.detail.receiptPath}`);
+    if (receipt.detail?.evidencePath) console.log(`  evidence: ${receipt.detail.evidencePath}`);
+  }
+  process.exitCode = EXIT[receipt.verdict];
+}
+
+if (isMain()) {
+  try {
+    await main(process.argv.slice(2));
+  } catch (error) {
+    // Exit 2, never 1: 1 means "a check failed", and an unexpected exception is not that.
+    console.error(`ERROR: ${firstLine(error)}`);
     process.exitCode = 2;
   }
 }

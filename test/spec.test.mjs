@@ -72,7 +72,7 @@ test("validateSpec requires key for press and selector for assertVisible", () =>
   });
   assert.equal(problems.length, 2);
   assert.match(problems[0], /\(press\) needs "key"/);
-  assert.match(problems[1], /\(assertVisible\) needs "selector"/);
+  assert.match(problems[1], /\(assertVisible\) needs a target/);
 });
 
 test("press Enter submits the form and assertVisible sees the status", TIMEOUT, async () => {
