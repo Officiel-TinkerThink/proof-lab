@@ -23,6 +23,9 @@ const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts"
 const EMAIL = "ada@example.test";
 const KEY = "waitlist-record";
 const TIMEOUT_MS = 3000;
+// A page load is where machine load shows first (a cold browser on a busy host took more than 3 s and the run came back
+// ERROR: "page.goto: Timeout 3000ms exceeded"). Navigation gets its own, longer budget; checks keep the short one.
+const NAVIGATION_TIMEOUT_MS = 20000;
 
 const firstLine = error => (error instanceof Error ? error.message : String(error)).split("\n")[0];
 
@@ -62,6 +65,7 @@ export async function prove({ url, bug, receiptsDir = DEFAULT_RECEIPTS, key = si
     const context = await browser.newContext(); // fresh visitor: no storage
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT_MS);
+    page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
     page.on("pageerror", error => pageErrors.add(error.message));
     page.on("console", message => { if (message.type() === "error") pageErrors.add(message.text()); });
 

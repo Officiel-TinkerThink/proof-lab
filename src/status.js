@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { createFixtureHandler } from "./fixtures.js";
 import { render, revisionOf } from "./server.js";
+import { redactSecrets, specLabel } from "./spec/evidence.js";
 import { validateSpec } from "./spec/schema.js";
 import { firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -84,7 +85,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   const mine = [];
   for (const file of files) {
     const receipt = JSON.parse(await readFile(file, "utf8"));
-    if (typeof receipt.spec === "string" && receipt.spec.slice(0, receipt.spec.lastIndexOf("@")) === spec.name) mine.push({ ...receipt, file });
+    if (typeof receipt.spec === "string" && receipt.spec.slice(0, receipt.spec.lastIndexOf("@")) === redactSecrets(spec.name)) mine.push({ ...receipt, file });
   }
   if (mine.length === 0) return answer("NO-RECEIPT", { ...base, advice: [`No receipt for the spec "${spec.name}" yet. Run it, then ask again.`] });
 
@@ -110,7 +111,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
 
   // PASS. It counts only for this spec and this code.
   const reasons = [];
-  if (latest.spec !== `${spec.name}@${specHash}`) reasons.push("the spec changed since this receipt");
+  if (latest.spec !== specLabel(spec.name, specHash)) reasons.push("the spec changed since this receipt");
   const revisionNow = await currentRevision(spec);
   common.currentRevision = revisionNow;
   let unverified = false;

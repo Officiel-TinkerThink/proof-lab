@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactHead, redactSecrets, scrubRecord, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactHead, redactSecrets, scrubRecord, specLabel, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
@@ -31,8 +31,9 @@ const MAX_FAILURE_CONTEXTS = 5;
 const MAX_REVISION_RECHECKS = 50;
 const ARIA_CHARS = 8000;
 // Fields that are the run's own bookkeeping, not page or spec text; the scrub at the end of runSpec leaves them alone.
-const RECEIPT_BOOKKEEPING = ["at", "verdict"];
-const EVIDENCE_BOOKKEEPING = ["type", "at", "mime", "base64"];
+// "spec" is the run's identity (name scrubbed, hash appended by specLabel): scrubbing it again could swallow the hash.
+const RECEIPT_BOOKKEEPING = ["spec", "at", "verdict"];
+const EVIDENCE_BOOKKEEPING = ["type", "spec", "at", "mime", "base64"];
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
 export const stepLimits = { graceMs: 20000 }; // an object so a test can shorten it
@@ -56,7 +57,8 @@ export function createContext({ page, adopt = page => page, appUrl, specDir, tim
       // read or compared: only its length and a keyed fingerprint, as for cookies. The secret-making name is not inside the value.
       const hide = value => (isSensitiveStep(step) && typeof value !== "boolean" && value !== null && value !== undefined
         ? `(masked, ${maskValue(value)})` : value);
-      const expected = scrubValue(hide(rawExpected));
+      // "<op> completes" is the runner's own label for a step that could not run, not a value anyone typed.
+      const expected = scrubValue(rawExpected === `${step.op} completes` ? rawExpected : hide(rawExpected));
       const actual = scrubValue(hide(rawActual));
       const error = rawError === undefined ? undefined : scrubValue(rawError);
       // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
@@ -183,7 +185,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   }
   if (problems.length > 0) return refuse(`invalid spec: ${problems.join("; ")}`);
 
-  receipt.spec = `${spec.name}@${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+  receipt.spec = specLabel(spec.name, createHash("sha256").update(text).digest("hex").slice(0, 12));
   receipt.bug = spec.app?.bug ?? null;
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pageErrors = new Set();

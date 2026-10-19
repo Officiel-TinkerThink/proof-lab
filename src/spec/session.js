@@ -3,7 +3,10 @@
 import { chromium } from "playwright";
 import { environmentWithoutKey } from "../chain.js";
 
-const MIN_NAVIGATION_TIMEOUT_MS = 10000;
+// A page load is where machine load shows first: with three browser suites at once, a cold Chromium needed more than the
+// old 10 s and runs came back ERROR ("page.goto: Timeout 10000ms exceeded"). The load budget is long, the checks' own
+// budget (timeoutMs) stays short, and a load that still fails is ERROR (can't tell), never a verdict on the app.
+const MIN_NAVIGATION_TIMEOUT_MS = 30000;
 
 // The spec's "env" block as Playwright context options. Only what the schema allows gets here; absent means the browser default.
 export function contextOptionsOf(env) {

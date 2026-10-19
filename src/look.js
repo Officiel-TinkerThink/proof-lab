@@ -178,15 +178,18 @@ export async function look({ url, specPath, until, screenshotPath }) {
       status: documentStatuses.get(view.url().split("#")[0]) ?? null,
       replayed,
       aria: facts.aria === null ? null : clipValue(redactSecrets(facts.aria), ARIA_CHARS),
-      elements: facts.aria === null ? [] : actionableElements(redactSecrets(facts.aria)),
+      // Elements are read from the snapshot before it is scrubbed (a line cut at "Session:" has no name left to read);
+      // each name is scrubbed as a field below.
+      elements: facts.aria === null ? [] : actionableElements(facts.aria),
       testIds: facts.testIds,
-      storage: { local: facts.localStorage, session: facts.sessionStorage },
+      // Storage entries are key names, never values; a field called "session" would otherwise be masked as a credential.
+      storage: { local: facts.localStorage?.map(redactSecrets) ?? null, session: facts.sessionStorage?.map(redactSecrets) ?? null },
       frames: facts.frames,
       console: consoleRecords,
       pageErrors,
       failedRequests,
       screenshot,
-    }, ["screenshot", "status"]);
+    }, ["screenshot", "status", "storage"]);
   } finally {
     if (session) await session.close();
     if (server) await server.close().catch(() => {});
@@ -204,8 +207,8 @@ export function formatLook(result) {
   }
   if (result.elements.length === 0) lines.push("    (none found)");
   if (result.testIds?.length > 0) lines.push(`  test ids: ${result.testIds.join(", ")}`);
-  if (result.storage.local?.length > 0) lines.push(`  localStorage keys: ${result.storage.local.join(", ")}`);
-  if (result.storage.session?.length > 0) lines.push(`  sessionStorage keys: ${result.storage.session.join(", ")}`);
+  if (Array.isArray(result.storage.local) && result.storage.local.length > 0) lines.push(`  localStorage keys: ${result.storage.local.join(", ")}`);
+  if (Array.isArray(result.storage.session) && result.storage.session.length > 0) lines.push(`  sessionStorage keys: ${result.storage.session.join(", ")}`);
   if (result.frames > 0) lines.push(`  frames: ${result.frames} (a target inside one needs "frame")`);
   for (const record of result.console) lines.push(`  [console ${record.level}] ${record.text}`);
   for (const message of result.pageErrors) lines.push(`  [pageerror] ${message}`);

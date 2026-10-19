@@ -62,7 +62,7 @@ async function assertion(ctx, step, expected, evaluate) {
 async function textAssertion(ctx, step, read, show = value => value) {
   const match = matcher(step);
   // An address assertion can carry a query or hash in what it expects, so its label is hidden the same way as the actual.
-  await assertion(ctx, step, show === hideQuery ? hideAddressText(String(match.label)) : match.label, async () => {
+  await assertion(ctx, step, show === hideQuery && match.kind !== "matches" ? hideAddressText(String(match.label)) : match.label, async () => {
     const actual = await read();
     return { pass: actual !== null && match.test(actual), actual: actual === null ? null : show(actual) };
   });

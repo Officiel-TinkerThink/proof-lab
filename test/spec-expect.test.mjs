@@ -515,3 +515,68 @@ test("refuse and the choke point: a spec name that looks like a credential, and 
   assert.equal(receipt.verdict, "ERROR");
   assert.ok(receipt.app === null || typeof receipt.app === "string");
 });
+
+test("cycle 8: a credential field keeps its shape, a field called __proto__ or constructor is data, colliding keys are cheap and kept apart", async () => {
+  const { scrubValue, scrubRecord } = await import("../src/spec/evidence.js");
+  assert.deepEqual(scrubValue({ session: ["k1", "k2"] }), { session: ["[redacted]", "[redacted]"] }, "a list stays a list");
+  assert.deepEqual(scrubValue(JSON.parse('{"constructor":1,"toString":2}')), { constructor: 1, toString: 2 });
+  const proto = scrubValue(JSON.parse('{"__proto__":{"admin":true}}'));
+  assert.equal(Object.getPrototypeOf(proto), Object.prototype, "the prototype is not replaced");
+  assert.deepEqual(Object.keys(proto), ["__proto__"]);
+  const many = Object.fromEntries(Array.from({ length: 20000 }, (_, i) => [`token=value${i}`, i]));
+  const started = Date.now();
+  assert.equal(Object.keys(scrubValue(many)).length, 20000);
+  assert.ok(Date.now() - started < 3000, "many colliding keys must not cost quadratic time");
+  assert.deepEqual(scrubRecord({ storage: { session: ["a"] } }, ["storage"]), { storage: { session: ["a"] } });
+});
+
+test("cycle 8: names that mark a credential: authorization, pass, auth, sid, DB_PASS; a control called Session name is not one", async () => {
+  const { scrubValue, isSensitiveStep } = await import("../src/spec/evidence.js");
+  assert.deepEqual(scrubValue({ authorization: "abc123def456ghi789", pass: "zzz", db_auth: "q", sid: "x" }), { authorization: "[redacted]", pass: "[redacted]", db_auth: "[redacted]", sid: "[redacted]" });
+  assert.deepEqual(scrubValue({ author: "Ada", compass: "north" }), { author: "Ada", compass: "north" });
+  assert.equal(isSensitiveStep({ op: "assertStorage", key: "auth" }), true);
+  assert.equal(isSensitiveStep({ op: "assertStorage", key: "DB_PASS" }), true);
+  assert.equal(isSensitiveStep({ op: "assertValue", label: "Password" }), true);
+  assert.equal(isSensitiveStep({ op: "assertValue", label: "Session name" }), false);
+  assert.equal(isSensitiveStep({ op: "assertAttribute", attribute: "value", label: "API key" }), true);
+});
+
+test("cycle 8: a JWT after a hyphen, a long JWT and a long run of eyJ starts", () => {
+  assert.doesNotMatch(redactSecrets("auth-eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY.sig"), /eyJ/);
+  const long = `eyJ${"a".repeat(900)}.${"b".repeat(3000)}.${"c".repeat(500)}`;
+  assert.doesNotMatch(redactSecrets(long), /aaaa|bbbb/);
+  const started = Date.now();
+  redactSecrets("eyJ-".repeat(40000));
+  assert.ok(Date.now() - started < 3000, "a run of eyJ starts must stay fast");
+});
+
+test("cycle 8: a key at the end of an aria line does not take the next line; a URL quoted in an error loses its query", () => {
+  assert.equal(redactSecrets('- region "Cookies":\n  - button "Accept all"'), '- region "Cookies":\n  - button "Accept all"');
+  assert.equal(redactSecrets("page.goto: net::ERR at http://x:1/p?code=abcd1234 failed"), "page.goto: net::ERR at http://x:1/p?[query hidden] failed");
+  assert.equal(redactSecrets(redactSecrets("see http://x/p?code=1")), "see http://x/p?[query hidden]", "scrubbing twice changes nothing");
+  assert.doesNotMatch(redactSecrets("PIN: 482913"), /482913/);
+});
+
+test("cycle 8: redactHead says how much it cut; an address label hides a path token; a regex label is left as written", async () => {
+  const { redactHead, hideAddressText, specLabel } = await import("../src/spec/evidence.js");
+  assert.match(redactHead("x".repeat(60), 50), /\[10 more characters\]$/);
+  assert.equal(hideAddressText("http://h/reset/ab12cd34ef56gh78ij/x?c=1"), "http://h/reset/[hidden]/x?[query hidden]");
+  assert.equal(specLabel("Session: idle", "0123456789ab"), "Session: [redacted]@0123456789ab");
+  const { STEPS } = await import("../src/spec/steps.js");
+  const recorded = [];
+  const ctx = { timeoutMs: 100, page: { url: () => "http://127.0.0.1:4173/login" }, record: (...args) => recorded.push(args) };
+  await STEPS.assertUrl(ctx, { op: "assertUrl", matches: "login\?next=", timeout: 0 });
+  assert.match(recorded[0][2], /next=/, "the regular expression label is not cut at its question mark");
+});
+
+test("cycle 8: a spec named like a credential still gets a receipt that status can find", TIMEOUT, async () => {
+  const receipt = await runInline({ ...page("/fixtures/forms.html", [{ op: "assertTitle", equals: "nope", timeout: 0 }]), name: "Session: idle timeout" });
+  assert.match(receipt.spec, /^Session: \[redacted\]@[0-9a-f]{12}$/);
+});
+
+test("cycle 8: a look report lists session storage key names", () => {
+  return import("../src/look.js").then(({ formatLook }) => {
+    const text = formatLook({ url: "http://x/", title: null, status: null, replayed: [], elements: [], testIds: [], storage: { local: ["a"], session: ["[redacted]"] }, frames: 0, console: [], pageErrors: [], failedRequests: [], aria: "- main", screenshot: null });
+    assert.match(text, /sessionStorage keys: \[redacted\]/);
+  });
+});

@@ -31,14 +31,14 @@ async function runProve(args, { key = TEST_KEY } = {}) {
 
 test("clean app gives PASS with exit 0", async () => {
   const { exit, receipt } = await runProve([]);
-  assert.equal(receipt.verdict, "PASS");
+  assert.equal(receipt.verdict, "PASS", receipt.error ?? undefined);
   assert.equal(exit, 0);
   assert.ok(receipt.checks.length >= 6, "expected all checks to be recorded");
 });
 
 test("no-persist bug gives FAIL with exit 1 and reload checks named", async () => {
   const { exit, receipt } = await runProve(["--bug", "no-persist"]);
-  assert.equal(receipt.verdict, "FAIL");
+  assert.equal(receipt.verdict, "FAIL", receipt.error ?? undefined);
   assert.equal(exit, 1);
   const failed = receipt.checks.filter(check => !check.pass).map(check => check.name);
   assert.ok(failed.includes("status survives reload"));
@@ -47,7 +47,7 @@ test("no-persist bug gives FAIL with exit 1 and reload checks named", async () =
 
 test("lost-confirmation bug gives FAIL with exit 1 and both confirmation checks failing", async () => {
   const { exit, receipt } = await runProve(["--bug", "lost-confirmation"]);
-  assert.equal(receipt.verdict, "FAIL");
+  assert.equal(receipt.verdict, "FAIL", receipt.error ?? undefined);
   assert.equal(exit, 1);
   const failed = receipt.checks.filter(check => !check.pass).map(check => check.name);
   assert.deepEqual(failed.sort(), ["confirmation shows after join", "confirmation survives reload"].sort());
