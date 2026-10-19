@@ -158,7 +158,8 @@ export async function look({ url, specPath, until, screenshotPath }) {
     }
 
     // A replayed step may have moved the spec to a popup: look at the page the spec ends on.
-    const view = ctx?.page ?? session.page;
+    const spent = ctx?.page ?? session.page;
+    const view = spent.isClosed() ? spent.context().pages().at(-1) ?? spent : spent;
     const facts = await pageFacts(view);
     let title = null;
     try { title = await bounded(view.title(), 2000, "reading the title"); } catch { /* frozen or closed page */ }

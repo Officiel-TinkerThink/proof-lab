@@ -133,7 +133,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `assertCount` | target, `count` or `min`/`max` | No `nth`. |
 | `assertUrl` `assertTitle` | `equals` or `contains` or `matches` | |
 | `assertStorage` | `area?` (`local` default, `session`), `key`, `path?`, one of `equals` `exists` | The value is parsed as JSON when it can be; `path` is dotted. Objects compare by content. |
-| `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. A cookie value is usually a session token: the check records the expected side only as how it is compared and its length (`equals (7 characters)`), and for an **httpOnly** cookie the actual side only as its length, never a value. A cookie that is not there fails, also with `not`; use `exists: false` to expect absence. |
+| `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. A cookie value is usually a session token: the check never records a value, expected or actual: only the length and, for `equals` and for the actual side, a short SHA-256 fingerprint (`(cookie, 7 characters, sha256 1a2b3c4d)`), so two different values are told apart on a mismatch. A cookie that is not there fails, also with `not`; use `exists: false` to expect absence. |
 | `setViewport` | `width`, `height` | Resizes the running page (1 to 10000). Fires `resize`. |
 | `emulateMedia` | one or more of `media` (`screen` `print`), `colorScheme`, `reducedMotion` | Changes the running page; `matchMedia` listeners fire. |
 | `setOffline` | `offline` | Cuts (or restores) the network of the whole browser context until a later `setOffline`. |
@@ -147,7 +147,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `switchTab` | `index`, or one of `equals` `contains` `matches` | Moves the spec to another open tab. `index` counts tabs in the order they opened (0 = the first page of the run); the other form matches the tab's address. No such tab is a failed step. |
 | `closeTab` | | Closes the current tab and moves to the last one still open. The only tab cannot be closed. |
 
-`matches` is a regular expression; `flags` may use `i m s u v` (not `g` or `y`).
+`matches` is a regular expression; `flags` may use `d i m s u v` (not `g` or `y`).
 
 ### Expectations: what an action must cause
 
@@ -171,7 +171,7 @@ A text field below is a string (equals) or an object with one of `equals` `conta
 
 Every kind also takes `appears: false`: nothing of that kind may happen. It waits `within` ms (default 500, at most
 60000) and fails if one happened; no other field may be given with it. For an expected event the wait is the step's
-`timeout`, counted from the start of the step.
+`timeout`, counted from the start of the step; an event that has already happened gets at least one more second to finish (a popup to load, a download to save). The step's overall limit grows by the longest `within`. A popup that has closed itself is not switched to, every popup opened by the step gets the run's page-error and console hooks, and the final picture is taken from the last tab still open.
 
 `matches` is a regular expression; `flags` may use `i m s u v` (not `g` or `y`).
 

@@ -11,6 +11,9 @@ import { bounded, firstLine } from "./util.js";
 
 export const MAX_DOWNLOAD_READ_BYTES = 1_000_000;
 export const DEFAULT_ABSENT_MS = 500;
+// The longest an absence wait can take, so the step's outer bound can include it.
+export const absentWaitMs = step => Math.max(0, ...Object.values(step.expect ?? {})
+  .filter(block => block?.appears === false).map(block => block.within ?? DEFAULT_ABSENT_MS));
 const ACTUAL_TEXT_CHARS = 200;
 
 // A text expectation is a string (equals) or an object with one of equals, contains, matches (and flags).
@@ -58,7 +61,7 @@ const ARM = {
       off: () => page.off("dialog", handler),
       async evaluate() {
         const first = seen[0] ?? null;
-        const actual = first === null ? null : { ...first, answered: answer, ...(seen.length > 1 ? { dialogs: seen.length } : {}) };
+        const actual = first === null ? null : { type: first.type, message: clipValue(first.message, ACTUAL_TEXT_CHARS), answered: answer, ...(seen.length > 1 ? { dialogs: seen.length } : {}) };
         if (block.appears === false) return { pass: first === null, expected: { dialog: "none" }, actual };
         const expected = without({ dialog: "appears", type: block.type, message: block.message === undefined ? undefined : matchOf(block.message).label });
         const pass = first !== null
@@ -120,7 +123,9 @@ const ARM = {
     const happened = signal();
     // The popup gets the run's hooks at once: an error it throws while loading is the app's error.
     const handler = popup => {
-      if (found === null) found = ctx.adopt(popup);
+      // Every popup gets the hooks, so a page error in the second one counts too; the first one is the one checked.
+      const adopted = ctx.adopt(popup);
+      if (found === null) found = adopted;
       happened.fire();
     };
     page.on("popup", handler);
@@ -143,15 +148,16 @@ const ARM = {
         } catch (loadError) {
           error = firstLine(loadError);
         }
-        const actual = { url: found.url(), title: await bounded(found.title(), 2000, "reading the title").catch(() => null) };
-        // The spec carries on in the new tab unless it says not to.
-        if (block.switchTo !== false) {
+        const title = await bounded(found.title(), 2000, "reading the title").catch(() => null);
+        const actual = { url: found.url(), title: title === null ? null : clipValue(title, ACTUAL_TEXT_CHARS) };
+        // The spec carries on in the new tab unless it says not to, or the tab has already closed itself.
+        if (block.switchTo !== false && !found.isClosed()) {
           await found.bringToFront().catch(() => {});
           ctx.page = found;
         }
         const pass = error === undefined
           && (block.url === undefined || matchOf(block.url).test(actual.url))
-          && (block.title === undefined || (actual.title !== null && matchOf(block.title).test(actual.title)));
+          && (block.title === undefined || (title !== null && matchOf(block.title).test(title)));
         return { pass, expected, actual, ...(error ? { error } : {}) };
       },
     };
@@ -162,6 +168,8 @@ const ARM = {
 // propagates (after the listeners are removed) and is recorded by the caller as the step's failed check.
 export async function withExpectations(ctx, step, labelOf, action) {
   const deadline = performance.now() + (step.timeout ?? ctx.timeoutMs);
+  // If the step was given up on (its bound hit) while this still waits, a late record would land on a later step.
+  const index = ctx.index;
   const armed = Object.keys(ARM)
     .filter(kind => step.expect[kind] !== undefined)
     .map(kind => ({ kind, block: step.expect[kind], ...ARM[kind](ctx, step.expect[kind]) }));
@@ -172,9 +180,10 @@ export async function withExpectations(ctx, step, labelOf, action) {
       entry.happened,
       entry.block.appears === false ? entry.block.within ?? DEFAULT_ABSENT_MS : deadline - performance.now(),
     )));
-    const label = labelOf(step, ctx.index);
+    const label = labelOf(step, index);
     for (const entry of armed) {
       const outcome = await entry.evaluate(deadline - performance.now());
+      if (ctx.index !== index) return;
       ctx.record({ ...step, check: `${label} -> ${entry.kind}` }, outcome.pass, outcome.expected, outcome.actual, outcome.error);
     }
   } finally {

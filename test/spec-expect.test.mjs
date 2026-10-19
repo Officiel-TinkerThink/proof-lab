@@ -193,6 +193,18 @@ test("popup: a wrong address, a missing popup and a popup that should not open a
   assert.match(failed[2].actual.url, /nav-b\.html$/);
 });
 
+test("popup: a popup that closes itself leaves a receipt, not an ERROR, and the run stays on its page", TIMEOUT, async () => {
+  const receipt = await runInline(page(POPUPS, [
+    { ...button("Open page B and close it"), expect: { popup: { url: { contains: "nav-b" } } } },
+  ]));
+  assert.notEqual(receipt.verdict, "ERROR", explain(receipt));
+  const both = await runInline(page(POPUPS, [
+    { ...button("Open page B twice"), expect: { popup: { title: "Page B", switchTo: false } } },
+    title("Popups fixture"),
+  ]));
+  assert.equal(both.verdict, "PASS", explain(both));
+});
+
 test("switchTab and closeTab: a tab that is not there is a failed step with a hint, not an ERROR", TIMEOUT, async () => {
   const receipt = await runInline(page(POPUPS, [
     { op: "switchTab", index: 5, hint: "open the popup first" },

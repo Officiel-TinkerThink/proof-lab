@@ -1,5 +1,6 @@
 // One function per op. Actions throw when the page does not allow them (the runner records that as a failed check).
 // Assertions never throw: they poll, then record a check with the last value read.
+import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hasTarget, locate } from "./locate.js";
@@ -254,13 +255,17 @@ export const STEPS = {
       return { pass: isDeepStrictEqual(actual, step.equals), actual };
     });
   },
-  // An httpOnly cookie is usually a session token: the receipt records how long it is, never the value.
+  // A cookie is usually a session token: the receipt records its length and a fingerprint, never the value.
   async assertCookie(ctx, step) {
     const context = ctx.page.context();
     const match = step.exists === undefined ? matcher(step) : null;
     // A cookie value is often a session token, and whether it is httpOnly is known only after reading it: the receipt
     // never carries the expected value, only how it is compared and its length.
-    const expected = match === null ? { exists: step.exists } : `${match.kind} (${String(match.value).length} characters)`;
+    // A short fingerprint stands in for the value: two different values show two different fingerprints on a mismatch.
+    const print = value => `${String(value).length} characters, sha256 ${createHash("sha256").update(String(value)).digest("hex").slice(0, 8)}`;
+    const expected = match === null
+      ? { exists: step.exists }
+      : `${match.kind} (${match.kind === "equals" ? print(match.value) : `${String(match.value).length} characters`})`;
     await assertion(ctx, step, expected, async () => {
       const found = (await context.cookies()).find(cookie => cookie.name === step.cookie && (step.path === undefined || cookie.path === step.path));
       if (match === null) return { pass: (found !== undefined) === step.exists, actual: found !== undefined };
@@ -268,7 +273,7 @@ export const STEPS = {
       if (!found) throw new Error("cookie not found");
       return {
         pass: match.test(found.value),
-        actual: found.httpOnly ? `(httpOnly cookie, ${found.value.length} characters)` : found.value,
+        actual: `(cookie, ${print(found.value)})`,
       };
     });
   },

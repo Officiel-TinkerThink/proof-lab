@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
 import { clipValue, evidenceText, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
-import { withExpectations } from "./spec/expect.js";
+import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
@@ -70,7 +70,7 @@ export async function runStep(ctx, step) {
   if (target) record.target = target;
   try {
     const act = () => STEPS[step.op](ctx, step);
-    await bounded(step.expect === undefined ? act() : withExpectations(ctx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS, `step ${ctx.index} (${step.op})`);
+    await bounded(step.expect === undefined ? act() : withExpectations(ctx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
   } catch (error) {
     if (step.optional) {
       record.skipped = firstLine(error);
@@ -232,7 +232,9 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     const drift = changedWhileRunning ?? await revisionDrift(seenRevisions);
     if (drift) throw new Error(`the app changed while running (${drift}); evidence from two builds proves neither`);
     reviews = ctx.reviews;
-    shot = await ctx.page.screenshot({ fullPage: true });
+    // A popup that closed itself leaves no page to photograph: take the last tab that is still open.
+    const finalPage = ctx.page.isClosed() ? ctx.page.context().pages().at(-1) ?? ctx.page : ctx.page;
+    shot = await finalPage.screenshot({ fullPage: true });
     completed = true;
   } catch (error) {
     receipt.verdict = "ERROR";
