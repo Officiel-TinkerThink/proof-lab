@@ -50,8 +50,8 @@ export function actionableElements(aria) {
 function withoutQuery(url) {
   try {
     const parsed = new URL(url);
-    // about:, data: and the like have an opaque origin ("null"): show them as written, without query or fragment.
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return clipValue(`${parsed.protocol}${parsed.pathname}`, 200);
+    // about:, data:, chrome-error: and the like have an opaque or no origin ("null"): show scheme, host and path without query or fragment.
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return clipValue(`${parsed.protocol}${parsed.host ? `//${parsed.host}` : ""}${parsed.pathname}`, 200);
     return clipValue(`${parsed.origin}${parsed.pathname}`, 200);
   } catch {
     return clipValue(String(url).split("?")[0], 200);
@@ -132,8 +132,10 @@ export async function look({ url, specPath, until, screenshotPath }) {
         onResponse: response => {
           try {
             const request = response.request();
-            if (request.resourceType() === "document" && request.frame().parentFrame() === null && (documentStatuses.has(response.url()) || documentStatuses.size < 200)) {
-              documentStatuses.set(response.url(), response.status()); // a later load of the same URL replaces the earlier status
+            if (request.resourceType() === "document" && request.frame().parentFrame() === null) {
+              documentStatuses.delete(response.url()); // a later load of the same URL replaces the earlier status and counts as the newest
+              documentStatuses.set(response.url(), response.status());
+              if (documentStatuses.size > 200) documentStatuses.delete(documentStatuses.keys().next().value); // keep the newest: the final page is among them
             }
             if (response.status() >= 400) failed({ url: withoutQuery(response.url()), status: response.status() });
           } catch { /* a response of a page that is already closing */ }

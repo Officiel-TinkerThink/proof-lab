@@ -196,6 +196,12 @@ test("look reports the status and URL of the page it ends on, not of the first l
     const blank = await look({ specPath: blankPath });
     assert.equal(blank.url, "about:blank", "an opaque-origin URL is shown as written");
     assert.equal(blank.status, null, "a page reached without a response has no status, not the earlier page's 200");
+
+    const hashPath = join(dir, "to-hash.json");
+    await writeFile(hashPath, JSON.stringify({ name: "to-hash", steps: [...SIMPLE, { op: "goto", url: "/#section" }] }));
+    const hash = await look({ specPath: hashPath });
+    assert.equal(hash.status, 200, "a fragment does not hide the status of the page");
+    assert.doesNotMatch(hash.url, /#/);
   });
 });
 
