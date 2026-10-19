@@ -6,10 +6,13 @@ headless browser through it, records every check, and writes a signed **receipt*
 
 ```
 node src/doctor.js  --key-file <key> [--spec specs/x.json]      is the setup sound?        exit 0 / 2
-node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR
-node src/status.js  --spec specs/x.json --key-file <key>        can I say done?            exit 0 / 1 / 2
+node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR / 3 PASS but needs review
+node src/status.js  --spec specs/x.json --key-file <key>        can I say done?            exit 0 / 1 / 2 / 3
 node src/show.js    --key-file <key> [--failures|--steps|...]   what happened in detail?
+node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does the page offer a spec? (no receipt, no key)
 ```
+
+`node src/lab.js <run|status|doctor|show|look> ...` is the same set behind one entry point.
 
 The key is read from a file only (`--key-file`, mode 0600 on Linux and macOS, at least 32 bytes). `PROOF_LAB_KEY` in the
 environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or `PROOF_LAB_RECEIPTS` says otherwise.
@@ -29,6 +32,7 @@ environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or 
 | STOP | 1 | The same check failed on 3 runs in a row (`--max-attempts N`) | Stop. Hand a human the receipt. |
 | STALE | 1 | PASS, but the spec or the app changed since | Run again |
 | UNVERIFIED | 1 | PASS, but the app exposes no revision so freshness cannot be shown | Run again, or `--max-age <seconds>` |
+| NEEDS-REVIEW | 3 | Every check passed and is fresh, but the spec lists claims only a human can judge (`review` steps) | Do not say done. Hand a human the receipt and the list. |
 | NO-RECEIPT | 1 | No receipt for this spec | Run it |
 | ERROR | 2 | The last run could not tell | Fix the setup, do not guess |
 | CANNOT-TELL | 2 | The chain does not verify, or the spec is invalid | Fix the setup, do not guess |
@@ -98,10 +102,11 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
-### Operations (34)
+### Operations (35)
 
 | Op | Fields | Notes |
 |---|---|---|
+| `review` | `check`, `note?` | **Not an assertion.** A claim no check can settle (copy tone, layout feel). It never passes or fails and counts no check. The run still ends PASS, but exit 3 and `status` NEEDS-REVIEW say a human must look. A spec of claims alone is invalid. |
 | `goto` | `url`, `status?` | A path starting with `/` is on the app's origin. `status` adds a check on the HTTP status. |
 | `back` `forward` `reload` | | `back`/`forward` with no history do nothing: follow with `assertUrl`. |
 | `waitForUrl` | `equals` or `contains` or `matches` | |
@@ -151,6 +156,7 @@ A signed JSON file, `receipts/<stamp>-<revision>.json`, small on purpose:
 | `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when |
 | `totals` | `{checks, passed, failed, omitted}`. `omitted` counts failed checks not listed below (the first 20 are listed). |
 | `checks` | **Failed checks only**: `{step, name, pass, expected, actual, hint?, error?}`, long values clipped to 200 characters |
+| `review` | `{total, items}`: claims from `review` steps that need a human (the first 20 as `{step, name, note?}`). Receipts from before this field have none. |
 | `evidence` | `{file, sha256, bytes}`: the evidence file next to the receipt, and its hash (covered by the signature) |
 | `pageErrors` | Up to 10 page errors, clipped |
 | `screenshot`, `error`, `next` | The final full-page screenshot; why the run is ERROR; what to do next |
@@ -171,6 +177,7 @@ a missing one is only a note, because the failures themselves are in the signed 
 | `run` | spec, app, revision, time, budget, node, platform, browser version |
 | `step` | `step`, `op`, `target`, `check`, `ms`, `ok`, and `skipped` for an optional step that failed |
 | `check` | Every check in full: `step`, `name`, `pass`, `expected`, `actual`, `hint?`, `error?` |
+| `review` | Every claim from a `review` step: `step`, `name`, `note?` |
 | `context` | For the first 5 failures: `url`, `title`, and `aria`, the accessibility tree of the page then |
 | `screenshot` | For the first failure: a small JPEG (`mime`, `base64`) |
 | `console`, `pageerror` | Console output (up to 500 records) and uncaught page errors |
@@ -187,6 +194,24 @@ node src/show.js --receipt <file> --receipts <dir> ...
 
 `show` checks the evidence against the receipt's hash first and refuses to show a file that does not match.
 Evidence may be pruned to save space; the receipts stay valid.
+
+## Look before you write
+
+`look` opens a page the way a run does (a fresh visitor, no stored state) and prints what a spec can use. It writes no
+receipt and needs no key. Use it to find the role and name of a control, the test ids, and the storage keys, instead of
+guessing them from source.
+
+```
+node src/look.js --url http://127.0.0.1:4173/                 the page as loaded
+node src/look.js --spec specs/waitlist.json --until 5          the page after the spec's first 5 steps
+node src/look.js --spec specs/waitlist.json --screenshot p.png --json
+```
+
+It reports the title and HTTP status, the targets as `{role, name}` (a repeated pair is flagged: add `nth` or narrow it),
+test ids, localStorage and sessionStorage keys (names only, never values), the frame count, console output, page errors,
+failed requests (origin and path only, never the query), and the accessibility tree. `--spec` replays the spec's own steps,
+which may change the app's state; `--url` only loads the page. `--screenshot` never replaces an existing file. Exit 0
+when it looked, 2 when it could not; never 1, because nothing was checked.
 
 ## Fixtures
 

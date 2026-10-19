@@ -246,7 +246,7 @@ test("failure paths: wrong text, ambiguous target, missing element, optional ste
     { op: "click", selector: "#no-such-either", optional: true, timeout: 200 },
     { op: "assertText", check: "not equals passes", ...testId("result", {}), equals: "something else", not: true },
   ]));
-  assert.equal(receipt.verdict, "FAIL");
+  assert.equal(receipt.verdict, "FAIL", explain(receipt));
   const failed = failedChecks(receipt);
   assert.deepEqual(failed.map(check => check.name), ["wrong text", "ambiguous button", "missing element"]);
   assert.equal(failed[0].actual, "not submitted");

@@ -9,6 +9,12 @@ import { defined, pick, readPath } from "./util.js";
 // Reads inside a poll are short so the poll, not Playwright, decides how long to keep trying.
 const READ_TIMEOUT_MS = 250;
 
+// A claim no assertion can settle (copy tone, layout feel). It is neither a pass nor a fail: it is listed for a human.
+// The page is not touched, and the step needs no target.
+function review(ctx, step) {
+  ctx.reviews.push({ step: ctx.index, name: step.check, ...(step.note === undefined ? {} : { note: step.note }) });
+}
+
 const budget = (ctx, step) => step.timeout ?? ctx.timeoutMs;
 const withTimeout = (ctx, step, options = {}) => defined({ ...options, timeout: budget(ctx, step) });
 
@@ -82,6 +88,8 @@ const toFile = (file, specDir) => {
 };
 
 export const STEPS = {
+  review,
+
   // Navigation
   async goto(ctx, step) {
     const response = await ctx.page.goto(new URL(step.url, ctx.appUrl).href, { waitUntil: "load", timeout: budget(ctx, step) });

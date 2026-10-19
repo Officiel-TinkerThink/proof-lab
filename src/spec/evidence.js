@@ -28,6 +28,15 @@ const summaryOfCheck = check => ({
   ...(check.hint === undefined ? {} : { hint: clipValue(check.hint, HINT_CHARS) }),
 });
 
+// Claims the spec made that no assertion can settle. total counts them all; items lists the first MAX_LISTED_REVIEWS, clipped.
+export const MAX_LISTED_REVIEWS = 20;
+export function summarizeReviews(reviews) {
+  const items = reviews.slice(0, MAX_LISTED_REVIEWS).map(({ step, name, note }) => ({
+    step, name: clipValue(name), ...(note === undefined ? {} : { note: clipValue(note, HINT_CHARS) }),
+  }));
+  return { total: reviews.length, items };
+}
+
 // totals counts every check; failures lists the failed ones (up to MAX_LISTED_FAILURES, clipped).
 export function summarize(checks) {
   const failed = checks.filter(check => !check.pass);

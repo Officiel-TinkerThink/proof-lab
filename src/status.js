@@ -2,6 +2,7 @@
 // Exit 0 only for a PASS receipt that is fresh. Every other answer says what to do next (the stop rules).
 //   0  PASS and fresh: done, show the receipt
 //   1  not proven: FAIL, STOP (same check keeps failing), STALE (code or spec changed since), NO-RECEIPT, UNVERIFIED
+//   3  NEEDS-REVIEW: every check passed and is fresh, but the spec lists claims only a human can judge
 //   2  cannot tell: the last run was ERROR, the chain does not verify, the spec is invalid: fix the setup, do not guess
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -14,7 +15,7 @@ import { validateSpec } from "./spec/schema.js";
 import { firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
-const EXIT = { PASS: 0, FAIL: 1, STOP: 1, STALE: 1, UNVERIFIED: 1, "NO-RECEIPT": 1, ERROR: 2, "CANNOT-TELL": 2 };
+const EXIT = { PASS: 0, FAIL: 1, STOP: 1, STALE: 1, UNVERIFIED: 1, "NO-RECEIPT": 1, "NEEDS-REVIEW": 3, ERROR: 2, "CANNOT-TELL": 2 };
 const META_REVISION = /<meta\s+name="app-revision"\s+content="([0-9a-f]{12})"/;
 
 export const exitCodeOf = state => EXIT[state];
@@ -92,6 +93,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   const common = {
     ...base, receiptFile: latest.file, verdict: latest.verdict, revision: latest.revision, at: latest.at,
     totals: latest.totals ?? null, failedChecks, attempts: mine.length,
+    review: { total: latest.review?.total ?? 0, items: latest.review?.items ?? [] },
   };
 
   if (latest.verdict === "ERROR") {
@@ -126,6 +128,9 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   if (unverified) {
     return answer("UNVERIFIED", { ...common, advice: ["PASS, but the app exposes no revision (meta app-revision), so this receipt cannot be tied to the code as it is now. Run the spec again, or pass --max-age <seconds>."] });
   }
+  if (common.review.total > 0) {
+    return answer("NEEDS-REVIEW", { ...common, advice: [`Every check passed, but ${common.review.total} claim(s) need a human to judge them. Do not say done: hand a human the receipt and the list.`] });
+  }
   const advice = ["Done. Show the receipt."];
   if (verified.missingEvidence.length > 0) advice.push(`Note: ${verified.missingEvidence.length} evidence file(s) are missing; the signed summaries still verify.`);
   return answer("PASS", { ...common, advice });
@@ -137,6 +142,7 @@ export function formatStatus(result) {
   if (result.revision !== undefined && result.revision !== null) lines.push(`  receipt revision: ${result.revision}${result.currentRevision ? `   current: ${result.currentRevision}` : ""}`);
   if (result.totals) lines.push(`  ${result.totals.checks} checks, ${result.totals.passed} passed, ${result.totals.failed} failed`);
   for (const check of result.failedChecks ?? []) lines.push(`  FAIL step ${check.step}: ${check.name}`);
+  for (const item of result.review?.items ?? []) lines.push(`  REVIEW step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
   for (const problem of result.problems ?? []) lines.push(`  problem: ${problem}`);
   for (const line of result.advice ?? []) lines.push(`  -> ${line}`);
   return lines.join("\n");

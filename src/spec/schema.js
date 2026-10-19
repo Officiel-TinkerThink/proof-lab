@@ -42,6 +42,8 @@ const FILE_FIELDS = { name: "string", mimeType: "string", text: "string", base64
 // target: "none" | "optional" | "required". assertion: true adds "not". oneOf: exactly one. anyOf: at least one.
 // forbidden: fields that make no sense for the op. conflicts: pairs that cannot be given together.
 export const OPS = {
+  // Not an assertion: a claim for a human to judge. It never passes or fails; the run ends "needs review" (exit 3).
+  review: { target: "none", fields: { note: "string" }, required: ["check"], forbidden: ["optional", "timeout", "hint", "name"] },
   goto: { target: "none", fields: { url: "string", status: "integer" }, required: ["url"] },
   back: { target: "none", fields: {} },
   forward: { target: "none", fields: {} },

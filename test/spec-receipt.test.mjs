@@ -11,7 +11,7 @@ import { verifyChain } from "../src/chain.js";
 import { KEY, TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
 const WAITLIST = fileURLToPath(new URL("../specs/waitlist.json", import.meta.url));
-const FIELD_ORDER = ["verdict", "app", "bug", "spec", "revision", "at", "totals", "checks", "evidence", "pageErrors", "screenshot", "error", "next", "keyId", "prevHash", "hash", "mac"];
+const FIELD_ORDER = ["verdict", "app", "bug", "spec", "revision", "at", "totals", "checks", "review", "evidence", "pageErrors", "screenshot", "error", "next", "keyId", "prevHash", "hash", "mac"];
 
 const records = async path => (await readFile(path, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line));
 const ofType = (all, type) => all.filter(record => record.type === type);

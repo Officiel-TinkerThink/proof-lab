@@ -11,6 +11,7 @@ const COMMANDS = {
   run: { about: "run a spec against the app and write a signed receipt (--spec, --key-file)", load: () => import("./run-spec.js"), withDefaults: false },
   status: { about: "say whether the work may be called done: PASS, FAIL, STOP, STALE, UNVERIFIED, NO-RECEIPT", load: () => import("./status.js"), withDefaults: true },
   doctor: { about: "check key, receipts directory, chain and specs before a run", load: () => import("./doctor.js"), withDefaults: true },
+  look: { about: "see a page as a spec sees it: roles, names, test ids, storage keys, console (no receipt)", load: () => import("./look.js"), withDefaults: false },
   show: { about: "read the evidence of one receipt (failures, steps, console, page)", load: () => import("./show.js"), withDefaults: true },
 };
 

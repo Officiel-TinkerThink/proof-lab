@@ -68,6 +68,10 @@ export function render(section, { receipt, records, path }) {
       if (receipt.evidence) lines.push(`  evidence: ${receipt.evidence.file} (${receipt.evidence.bytes} bytes)`);
       if (receipt.totals) lines.push(`  ${receipt.totals.checks} checks, ${receipt.totals.passed} passed, ${receipt.totals.failed} failed${receipt.totals.omitted ? ` (${receipt.totals.omitted} not listed here; see --checks)` : ""}`);
       for (const check of receipt.checks ?? []) lines.push(checkLine(check));
+      if (receipt.review?.total > 0) {
+        lines.push(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge${receipt.review.total > receipt.review.items.length ? ` (${receipt.review.items.length} listed)` : ""}`);
+        for (const item of receipt.review.items) lines.push(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
+      }
       if (receipt.error) lines.push(`  error: ${receipt.error}`);
       for (const line of receipt.next ?? []) lines.push(`  -> ${line}`);
       return { text: lines.join("\n"), data: receipt };

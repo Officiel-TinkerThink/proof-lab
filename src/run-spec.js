@@ -6,13 +6,13 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
 import { REVISION_HEADER, startApp } from "./server.js";
-import { environmentWithoutKey, fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, summarize, summarizePageErrors } from "./spec/evidence.js";
+import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
+import { clipValue, evidenceText, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
+import { openSession } from "./spec/session.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -21,6 +21,9 @@ export { validateSpec };
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts");
 const EXIT = { PASS: 0, FAIL: 1, ERROR: 2 };
+// Every check passed but the spec listed claims only a human can judge: not "done", and not a failure either.
+export const EXIT_NEEDS_REVIEW = 3;
+const exitCodeOf = receipt => (receipt.verdict === "PASS" && receipt.review?.total > 0 ? EXIT_NEEDS_REVIEW : EXIT[receipt.verdict]);
 const MAX_CONSOLE_RECORDS = 500;
 const MAX_PAGE_ERRORS_KEPT = 100;
 const MAX_FAILURE_CONTEXTS = 5;
@@ -37,9 +40,9 @@ function labelOf(step, index) {
   return `step ${index}: ${step.op} ${describeTarget(step)}`.trim();
 }
 
-function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
+export function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
   const ctx = {
-    page, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [],
+    page, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
     record(step, pass, expected, actual, error) {
       // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
       if (!pass && step.optional) {
@@ -56,7 +59,7 @@ function createContext({ page, appUrl, specDir, timeoutMs, checks }) {
 }
 
 // A step the page did not allow is a failed check, not an ERROR: the run goes on so the receipt lists every failure.
-async function runStep(ctx, step) {
+export async function runStep(ctx, step) {
   const first = ctx.checks.length;
   const suppressedBefore = ctx.suppressed.length;
   const started = performance.now();
@@ -121,7 +124,7 @@ async function revisionDrift(seen) {
 export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } = {}) {
   const receipt = {
     verdict: "ERROR", app: null, bug: null, spec: null, revision: null, at: fixedStamp(),
-    totals: null, checks: [], evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
+    totals: null, checks: [], review: { total: 0, items: [] }, evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
   };
   const refuse = message => {
     receipt.error = message;
@@ -159,6 +162,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const stepRecords = [];
   const contextRecords = [];
   const checks = [];
+  let reviews = [];
   const seenRevisions = new Map();
   let changedWhileRunning = null;
   let server = null;
@@ -174,34 +178,34 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       server = await startApp({ bug: spec.app?.bug });
       receipt.app = server.url;
     }
-    browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
-    browserVersion = `chromium ${browser.version()}`;
-    const context = await browser.newContext(); // fresh visitor: no storage
-    const page = await context.newPage();
-    page.setDefaultTimeout(timeoutMs);
-    page.setDefaultNavigationTimeout(Math.max(timeoutMs, 10000));
-    page.on("pageerror", error => noteError(error.message));
-    page.on("console", message => {
-      if (message.type() === "error") noteError(message.text());
-      if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level: message.type(), text: clipValue(message.text(), 1000) });
-      else consoleDropped += 1;
-    });
-    page.on("response", response => {
-      try {
-        if (response.request().resourceType() !== "document") return;
-        const revision = response.headers()[REVISION_HEADER];
-        if (!revision) return;
-        const url = response.url();
-        if (seenRevisions.has(url) && seenRevisions.get(url) !== revision) {
-          changedWhileRunning ??= `${new URL(url).pathname} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
-        }
-        seenRevisions.set(url, revision);
-      } catch { /* a response of a page that is already closing */ }
-    });
-
     // Without app.start the run opens the app exactly as given (an app.url with a path keeps its path).
     const firstUrl = spec.app?.start === undefined ? receipt.app : new URL(spec.app.start, receipt.app).href;
-    await page.goto(firstUrl, { waitUntil: "load" });
+    const session = await openSession({
+      firstUrl,
+      timeoutMs,
+      hooks: {
+        onPageError: message => noteError(message),
+        onConsole: (level, text) => {
+          if (level === "error") noteError(text);
+          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: clipValue(text, 1000) });
+          else consoleDropped += 1;
+        },
+        onResponse: response => {
+          try {
+            if (response.request().resourceType() !== "document") return;
+            const revision = response.headers()[REVISION_HEADER];
+            if (!revision) return;
+            const url = response.url();
+            if (seenRevisions.has(url) && seenRevisions.get(url) !== revision) {
+              changedWhileRunning ??= `${new URL(url).pathname} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
+            }
+            seenRevisions.set(url, revision);
+          } catch { /* a response of a page that is already closing */ }
+        },
+      },
+    });
+    ({ browser, browserVersion } = session);
+    const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
     const ctx = createContext({ page, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
@@ -221,6 +225,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     // The app can change on disk during a run; evidence from two builds proves neither.
     const drift = changedWhileRunning ?? await revisionDrift(seenRevisions);
     if (drift) throw new Error(`the app changed while running (${drift}); evidence from two builds proves neither`);
+    reviews = ctx.reviews;
     shot = await ctx.page.screenshot({ fullPage: true });
     completed = true;
   } catch (error) {
@@ -249,9 +254,12 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const { totals, failures } = summarize(checks);
   receipt.totals = totals;
   receipt.checks = failures;
+  receipt.review = summarizeReviews(reviews);
   receipt.pageErrors = summarizePageErrors([...pageErrors]);
   if (receipt.verdict === "PASS") {
-    receipt.next = ["These checks passed on this revision. They cover nothing else: read the screenshot for anything they missed."];
+    receipt.next = reviews.length > 0
+      ? [`Every check passed, but ${reviews.length} claim(s) need a human: ${reviews.slice(0, 5).map(item => item.name).join("; ")}. Do not say done; hand a human the receipt.`]
+      : ["These checks passed on this revision. They cover nothing else: read the screenshot for anything they missed."];
   } else if (receipt.verdict === "FAIL") {
     receipt.next = failures.map(check =>
       check.hint ?? `Fix "${check.name}" (step ${check.step}): expected ${JSON.stringify(check.expected)}, got ${JSON.stringify(check.actual)}.`);
@@ -264,6 +272,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion },
     ...stepRecords,
     ...checks.map(check => ({ type: "check", ...check })),
+    ...reviews.map(item => ({ type: "review", ...item })),
     ...contextRecords,
     ...consoleRecords,
     ...(consoleDropped > 0 ? [{ type: "console-truncated", dropped: consoleDropped }] : []),
@@ -311,11 +320,15 @@ export async function main(args) {
     console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());
     if (totals) console.log(`  ${totals.checks} checks, ${totals.passed} passed, ${totals.failed} failed`);
     for (const check of receipt.checks) console.log(`  FAIL step ${check.step}: ${check.name}`);
+    if (receipt.review?.total > 0) {
+      console.log(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge (the run is not "done")`);
+      for (const item of receipt.review.items) console.log(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
+    }
     if (receipt.error) console.log(`  error: ${receipt.error}`);
     if (receipt.detail?.receiptPath) console.log(`  receipt:  ${receipt.detail.receiptPath}`);
     if (receipt.detail?.evidencePath) console.log(`  evidence: ${receipt.detail.evidencePath}`);
   }
-  return EXIT[receipt.verdict];
+  return exitCodeOf(receipt);
 }
 
 if (isMainModule(import.meta.url)) {
