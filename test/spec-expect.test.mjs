@@ -783,3 +783,31 @@ test("redactSecrets: userinfo password is hidden, a port is not, and a hostile r
   redactSecrets("//a:".repeat(60000) + "@".repeat(60000));
   assert.equal(Date.now() - started < 3000, true);
 });
+
+test("redactSecrets: a quoted address with a blank in its query ends at its own quote", () => {
+  assert.equal(redactSecrets('{"url":"https://h/x?q=hello world"}'), '{"url":"https://h/x?[query hidden]"}');
+  assert.equal(redactSecrets("{'u':'https://h/x?q=hello world','n':1}"), "{'u':'https://h/x?[query hidden]','n':1}");
+  const once = redactSecrets('{"url":"https://h/x?q=hello world"}');
+  assert.equal(redactSecrets(once), once);
+});
+
+test("redactSecrets: a password that begins with digits is masked before ? or #; a port before / is kept", () => {
+  assert.equal(redactSecrets("https://u:1234?x@h/").includes("1234"), false);
+  assert.equal(redactSecrets("https://u:99#x@h/").includes("99#"), false);
+  assert.equal(redactSecrets("https://u:123@h/").includes("123"), false);
+  assert.equal(redactSecrets("//host:8080/path@v2"), "//host:8080/path@v2");
+});
+
+test("redactSecrets: ports in escaped and JSON text are kept, a quote inside a quoted query does not end it, a long password scrubs the same twice", () => {
+  const escaped = redactSecrets("http:\/\/localhost:4173\/?email=a@b.com");
+  assert.equal(escaped.includes("4173"), true);
+  assert.equal(escaped.includes("a@b.com"), false);
+  const json = redactSecrets('{"url":"http://localhost:4173","email":"a@b.com"}');
+  assert.equal(json.includes("4173"), true);
+  assert.equal(json.includes('"email"'), true);
+  assert.equal(redactSecrets('"https://h/x?a="b"'), '"https://h/x?[query hidden]"');
+  assert.equal(redactSecrets("'https://h/x?a='b'"), "'https://h/x?[query hidden]'");
+  const long = `//u:${"a".repeat(1900)}@${"b".repeat(200)}@host`;
+  assert.equal(redactSecrets(redactSecrets(long)), redactSecrets(long));
+  assert.equal(redactSecrets(long), "//u:[redacted]@host");
+});

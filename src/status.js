@@ -120,7 +120,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   common.currentRevision = typeof revisionNow === "string" ? redactSecrets(revisionNow) : revisionNow;
   let unverified = false;
   if (revisionNow !== null && latest.revision !== null) {
-    if (revisionNow !== latest.revision) reasons.push(`the app changed: the receipt says PASS for ${latest.revision}, but the source is now ${revisionNow}`);
+    if (revisionNow !== latest.revision) reasons.push(`the app changed: the receipt says PASS for ${latest.revision}, but the source is now ${redactSecrets(revisionNow)}`);
   } else if (maxAgeSeconds === undefined) {
     unverified = true; // the app exposes no revision, so the receipt cannot be tied to the code as it is now
   }
@@ -141,7 +141,9 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   return answer("PASS", { ...common, advice });
 }
 
-export function formatStatus(result) {
+// Scrubbed here, so every caller (status, doctor) prints safe text whichever field later holds app-supplied text.
+export function formatStatus(raw) {
+  const result = scrubValue(raw);
   const lines = [`${result.state}${result.spec ? ` ${result.spec}` : ""}`];
   if (result.receiptFile) lines.push(`  receipt: ${result.receiptFile}`);
   if (result.revision !== undefined && result.revision !== null) lines.push(`  receipt revision: ${result.revision}${result.currentRevision ? `   current: ${result.currentRevision}` : ""}`);

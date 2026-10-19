@@ -44,35 +44,27 @@ function hideUrlParts(token) {
   if (query === -1) return token;
   return `${token.slice(0, query)}?[query hidden]${hash === -1 ? "" : "#[hash hidden]"}`;
 }
-// "//user:password@host" inside a token (a run with no blank): the password, up to the last "@" within 2000 characters, is
-// replaced. Done token by token with the "@" positions listed once, so a hostile run of "//a:" starts costs one pass plus a
-// binary search each, never a rescan of the run.
+// "//user:password@host" inside a token (a run with no blank): everything after the colon up to the last "@" of the token is
+// replaced. The last "@" is found once and a match past it ends the scan, so a hostile run of "//a:" starts costs one pass.
+// No length window: a window made a second scrub of a very long password hide more than the first.
 const USERINFO_HOST = /(?:\\{0,4}\/){2}[^/\s:@]*:/g;
-const PORT_AT = /\d+(?:[/?#]|$)/y;
-const USERINFO_WINDOW = 2000;
+// A port is digits followed by a delimiter that cannot be part of a password in user information: "/", "\\", a quote, a
+// closing bracket, a comma, or the token end. "@" and "?" or "#" after digits mean a password that begins with digits.
+const PORT_AT = /\d+(?=[\\/"'<>,;)\]}]|$)/y;
 function hideUserinfo(token) {
-  if (!token.includes("@")) return token;
-  const ats = [];
-  for (let at = token.indexOf("@"); at !== -1; at = token.indexOf("@", at + 1)) ats.push(at);
+  const lastAt = token.lastIndexOf("@");
+  if (lastAt === -1) return token;
   let out = "";
   let copied = 0;
   USERINFO_HOST.lastIndex = 0;
   for (let found = USERINFO_HOST.exec(token); found !== null; found = USERINFO_HOST.exec(token)) {
     const end = found.index + found[0].length;
+    if (end > lastAt) break;
     PORT_AT.lastIndex = end;
     if (PORT_AT.test(token)) continue; // "host:4173/@name": a port is not a password
-    // the last "@" in end+1 .. end+2000 (a binary search over the sorted positions)
-    let low = 0;
-    let high = ats.length - 1;
-    let last = -1;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      if (ats[mid] <= end + USERINFO_WINDOW) { last = mid; low = mid + 1; } else high = mid - 1;
-    }
-    if (last === -1 || ats[last] < end + 1) continue;
     out += `${token.slice(copied, end)}[redacted]`;
-    copied = ats[last];
-    USERINFO_HOST.lastIndex = copied;
+    copied = lastAt;
+    break;
   }
   return copied === 0 ? token : out + token.slice(copied);
 }
@@ -111,7 +103,7 @@ const SECRET_PATTERNS = [
   // blank, a quote or a bracket, and from its first "?" or "#" to the next blank (a quote there is part of the query), so
   // an address of any length costs one pass; a marker already there is part of the token, which keeps the rule idempotent
   // and still hides what follows the marker.
-  [/(?<=")(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^\s"])*)?|(?<=')(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^\s'])*)?|(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
+  [/(?<=")(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^"\r\n]|"(?![\s,}\]):;)]|$))*)?|(?<=')(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^'\r\n]|'(?![\s,}\]):;)]|$))*)?|(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
   [/(?<![A-Fa-f0-9])[A-Fa-f0-9]{32,}(?![A-Fa-f0-9])/g, "[redacted hex]"],
   // A run of 40 or more token characters that contains a digit. Long hyphenated words and names ("closed-shadow-root-...")
   // have none and are kept. Starting only where a run begins keeps the scan linear.
