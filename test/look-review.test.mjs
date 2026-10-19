@@ -180,6 +180,39 @@ test("look --spec replays steps up to --until, so state made by the spec can be 
   assert.equal(none.replayed.length, 0);
 });
 
+test("look reports the status and URL of the page it ends on, not of the first load, and drops the query", TIMEOUT, async () => {
+  await withDir(async dir => {
+    const specPath = join(dir, "to-404.json");
+    await writeFile(specPath, JSON.stringify({ name: "to-404", steps: [...SIMPLE, { op: "goto", url: "/api/status/404?token=secret" }] }));
+    const result = await look({ specPath });
+    assert.equal(result.status, 404, "the goto's 404 answers for the page the header describes");
+    assert.match(result.url, /\/api\/status\/404$/);
+    assert.doesNotMatch(JSON.stringify(result), /secret|token=/);
+    const before = await look({ specPath, until: 1 });
+    assert.equal(before.status, 200);
+  });
+});
+
+test("a spec file that is not JSON is refused without echoing any of its bytes", TIMEOUT, async () => {
+  await withDir(async dir => {
+    const notSpec = join(dir, "key.txt");
+    await writeFile(notSpec, "deadbeefcafe0123456789abcdef-SECRETKEYBYTES");
+    await assert.rejects(look({ specPath: notSpec }), error => /could not be parsed as JSON/.test(error.message) && !/deadbeef|SECRET/i.test(error.message));
+    const receipt = await runSpec({ specPath: notSpec, key: KEY, receiptsDir: join(dir, "receipts") });
+    assert.equal(receipt.verdict, "ERROR");
+    assert.doesNotMatch(String(receipt.error), /deadbeef|SECRET/i);
+  });
+});
+
+test("an ERROR run whose first page fails to load still records the browser in the evidence", TIMEOUT, async () => {
+  await withDir(async dir => {
+    const { receipt, receipts } = await runWith(dir, SIMPLE, { app: { url: "http://127.0.0.1:1/" } });
+    assert.equal(receipt.verdict, "ERROR");
+    const lines = (await readFile(join(receipts, receipt.evidence.file), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.match(lines.find(record => record.type === "run").browser, /^chromium /);
+  });
+});
+
 test("look shows page errors the app throws, and refuses what it cannot do", TIMEOUT, async () => {
   const strict = JSON.parse(await readFile(STRICT, "utf8"));
   await withDir(async dir => {

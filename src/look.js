@@ -20,7 +20,6 @@ const MAX_ELEMENTS = 200;
 const MAX_CONSOLE = 50;
 const MAX_PAGE_ERRORS = 20;
 const MAX_FAILED_REQUESTS = 50;
-const MAX_KEYS = 50;
 const READ_MS = 3000;
 // Roles a visitor acts on; headings and dialogs are listed too because specs assert on them.
 const ACTIONABLE = new Set(["button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "combobox", "listbox", "option", "slider", "spinbutton", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "heading", "dialog", "alert", "status"]);
@@ -81,7 +80,8 @@ export async function look({ url, specPath, until, screenshotPath }) {
       text = await readFile(specPath, "utf8");
       spec = JSON.parse(text);
     } catch (error) {
-      throw new Error(`spec could not be read or parsed: ${firstLine(error)}`);
+      // A JSON.parse message can quote the file's own bytes, so only the kind of failure is reported.
+      throw new Error(`spec could not be ${error instanceof SyntaxError ? "parsed as JSON" : `read (${error?.code ?? "error"})`}`);
     }
     const problems = validateSpec(spec);
     if (problems.length > 0) throw new Error(`invalid spec: ${problems.join("; ")}`);
@@ -111,7 +111,6 @@ export async function look({ url, specPath, until, screenshotPath }) {
       }
       firstUrl = spec.app?.start === undefined ? appUrl : new URL(spec.app.start, appUrl).href;
     } else {
-      appUrl = url;
       firstUrl = url;
     }
 
@@ -128,7 +127,9 @@ export async function look({ url, specPath, until, screenshotPath }) {
         onPageError: message => { if (pageErrors.length < MAX_PAGE_ERRORS) pageErrors.push(clipValue(message, 300)); },
         onResponse: response => {
           try {
-            if (documentStatus === null && response.request().resourceType() === "document") documentStatus = response.status();
+            const request = response.request();
+            // The latest top-level navigation answers for the page the report describes (redirect hops are overwritten by the last).
+            if (request.resourceType() === "document" && request.frame().parentFrame() === null) documentStatus = response.status();
             if (response.status() >= 400) failed({ url: withoutQuery(response.url()), status: response.status() });
           } catch { /* a response of a page that is already closing */ }
         },
@@ -157,7 +158,7 @@ export async function look({ url, specPath, until, screenshotPath }) {
       screenshot = screenshotPath;
     }
     return {
-      url: session.page.url(),
+      url: withoutQuery(session.page.url()),
       title,
       status: documentStatus,
       replayed,

@@ -138,7 +138,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     text = await readFile(specPath, "utf8");
     spec = JSON.parse(text);
   } catch (error) {
-    return refuse(`spec could not be read or parsed: ${firstLine(error)}`);
+    // A JSON.parse message can quote the file's own bytes, so only the kind of failure is reported.
+    return refuse(`spec could not be ${error instanceof SyntaxError ? "parsed as JSON" : `read (${error?.code ?? "error"})`}`);
   }
   let problems;
   try {
@@ -184,6 +185,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       firstUrl,
       timeoutMs,
       hooks: {
+        onLaunch: version => { browserVersion = version; },
         onPageError: message => noteError(message),
         onConsole: (level, text) => {
           if (level === "error") noteError(text);
@@ -204,7 +206,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         },
       },
     });
-    ({ browser, browserVersion } = session);
+    browser = session.browser;
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 

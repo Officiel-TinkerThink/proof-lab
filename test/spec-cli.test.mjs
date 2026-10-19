@@ -48,7 +48,7 @@ test("the CLI exits 2, not 1, for every setup problem, and writes nothing", TIME
       const result = cli(["--spec", spec, "--key-file", keyFile, "--receipts", receipts]);
       assert.equal(result.status, 2, spec);
       assert.match(result.stdout, /^ERROR /m);
-      assert.match(result.stdout, /error: (invalid spec|spec could not be read)/);
+      assert.match(result.stdout, /error: (invalid spec|spec could not be (read|parsed as JSON))/);
     }
     await assert.rejects(readdir(receipts), { code: "ENOENT" });
   } finally {

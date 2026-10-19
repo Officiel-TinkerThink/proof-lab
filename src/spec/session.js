@@ -5,12 +5,14 @@ import { environmentWithoutKey } from "../chain.js";
 
 const MIN_NAVIGATION_TIMEOUT_MS = 10000;
 
-// hooks: onPageError(message), onConsole(level, text), onResponse(response), onRequestFailed(request), all optional.
+// hooks: onLaunch(browserVersion), onPageError(message), onConsole(level, text), onResponse(response), onRequestFailed(request), all optional.
 // Returns { browser, page, browserVersion, close }. close() never throws. Navigation to firstUrl is part of opening:
 // if it fails the browser is closed again and the error is thrown.
 export async function openSession({ firstUrl, timeoutMs, hooks = {} }) {
   const browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
   const close = () => browser.close().catch(() => {});
+  const browserVersion = `chromium ${browser.version()}`;
+  hooks.onLaunch?.(browserVersion); // before the first navigation, so a run that fails there still records its browser
   try {
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -21,7 +23,7 @@ export async function openSession({ firstUrl, timeoutMs, hooks = {} }) {
     page.on("response", response => hooks.onResponse?.(response));
     page.on("requestfailed", request => hooks.onRequestFailed?.(request));
     await page.goto(firstUrl, { waitUntil: "load" });
-    return { browser, page, browserVersion: `chromium ${browser.version()}`, close };
+    return { browser, page, browserVersion, close };
   } catch (error) {
     await close();
     throw error;
