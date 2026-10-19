@@ -26,7 +26,11 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
   try {
     const context = await browser.newContext(contextOptionsOf(env));
     // The first page and every popup get the same timeouts and hooks: an error on a second tab is still the app's error.
+    // Idempotent: the context's "page" event and an expectation block can both adopt the same popup, and hooks must not double.
+    const adopted = new WeakSet();
     const adopt = page => {
+      if (adopted.has(page)) return page;
+      adopted.add(page);
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(Math.max(timeoutMs, MIN_NAVIGATION_TIMEOUT_MS));
       page.on("pageerror", error => hooks.onPageError?.(error.message));
@@ -35,6 +39,8 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
       page.on("requestfailed", request => hooks.onRequestFailed?.(request));
       return page;
     };
+    // Any tab the app opens, by a plain click or a script, is the app's tab: its errors count, with or without an expect block.
+    context.on("page", adopt);
     const page = adopt(await context.newPage());
     await page.goto(firstUrl, { waitUntil: "load" });
     return { browser, page, adopt, browserVersion, close };

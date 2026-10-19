@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { validateSpec } from "../src/run-spec.js";
+import { redactSecrets } from "../src/spec/evidence.js";
+import { hideQuery } from "../src/spec/expect.js";
 import { TIMEOUT, explain, failedChecks, page, runInline } from "./spec-helpers.mjs";
 
 const DIALOGS = "/fixtures/dialogs.html";
@@ -209,8 +211,8 @@ test("runStep: a step that hung past its limit cannot record a check or move the
   const { createContext, runStep, stepLimits } = await import("../src/run-spec.js");
   const { STEPS } = await import("../src/spec/steps.js");
   const before = stepLimits.graceMs;
-  const pageA = { name: "a" };
-  const pageB = { name: "b" };
+  const pageA = { name: "a", isClosed: () => false };
+  const pageB = { name: "b", isClosed: () => false };
   const checks = [];
   const ctx = createContext({ page: pageA, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks });
   let release;
@@ -232,6 +234,79 @@ test("runStep: a step that hung past its limit cannot record a check or move the
     stepLimits.graceMs = before;
     delete STEPS.__hang;
     delete STEPS.__quick;
+  }
+});
+
+test("redactSecrets: credential-shaped text is replaced, ordinary text is not", () => {
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r";
+  assert.equal(redactSecrets(`auth ${jwt} done`), "auth [redacted jwt] done");
+  assert.equal(redactSecrets("Authorization: Bearer abcdef123456789"), "Authorization: [redacted]");
+  assert.equal(redactSecrets("login failed token=hunter2hunter2 for ada"), "login failed token=[redacted] for ada");
+  assert.equal(redactSecrets('{"password":"swordfish99"}'), '{"password":"[redacted]"}');
+  assert.equal(redactSecrets("GET https://ada:s3cret@example.test/x"), "GET https://ada:[redacted]@example.test/x");
+  assert.equal(redactSecrets(`key ${"a1b2c3d4".repeat(5)}`), "key [redacted hex]");
+  for (const plain of ["status code=404 for /api/items", "TypeError: x is not a function at app.js:12:3", "Failed to load resource: 500"]) {
+    assert.equal(redactSecrets(plain), plain);
+  }
+});
+
+test("hideQuery: a popup address keeps its origin and path, never its query or fragment", () => {
+  assert.equal(hideQuery("http://127.0.0.1:9/fixtures/nav-b.html?code=s3cret#frag"), "http://127.0.0.1:9/fixtures/nav-b.html?[query hidden]#[hash hidden]");
+  assert.equal(hideQuery("http://127.0.0.1:9/a"), "http://127.0.0.1:9/a");
+  assert.equal(hideQuery("about:blank"), "about:blank");
+  assert.equal(hideQuery("data:text/html,<p>secret</p>"), "data:[hidden]");
+});
+
+test("popup: the address in the evidence has no query, while the match still sees the whole address", TIMEOUT, async () => {
+  const receipt = await runInline(page(POPUPS, [
+    { ...button("Open page B with a code"), expect: { popup: { url: { contains: "code=s3cretvalue1" }, switchTo: false } } },
+    { ...button("Open page B with a code"), expect: { popup: { url: { contains: "nope" }, switchTo: false } } },
+  ]));
+  const failed = failedChecks(receipt);
+  assert.deepEqual(failed.map(check => check.step), [2], explain(receipt));
+  assert.equal(failed[0].actual.url.includes("s3cretvalue1"), false, "the code must not reach the receipt");
+  assert.ok(failed[0].actual.url.endsWith("/fixtures/nav-b.html?[query hidden]#[hash hidden]"), failed[0].actual.url);
+});
+
+test("popup: a page error in a tab the app opened by a plain click counts, and the credential in it is not recorded", TIMEOUT, async () => {
+  const receipt = await runInline({ ...page(POPUPS, [
+    button("Open the broken page"),
+    { op: "switchTab", index: 1 },
+    title("Broken page"),
+    { op: "assertText", selector: "h1", equals: "Broken" },
+  ]), noPageErrors: true });
+  assert.equal(receipt.verdict, "FAIL", explain(receipt));
+  const text = JSON.stringify(receipt);
+  assert.match(text, /boom/);
+  assert.doesNotMatch(text, /swordfish99|hunter2hunter2/, "a credential the app logged must not reach the receipt");
+});
+
+test("createContext: a page that closed is replaced by the last open tab", async () => {
+  const { createContext } = await import("../src/run-spec.js");
+  const open = { name: "open", isClosed: () => false };
+  const closed = { name: "closed", isClosed: () => true, context: () => ({ pages: () => [{ isClosed: () => false, name: "first" }, open] }) };
+  const ctx = createContext({ page: closed, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks: [] });
+  assert.equal(ctx.page, open);
+  ctx.page = closed;
+  assert.equal(ctx.page, open, "a closed page assigned later is repaired the same way");
+});
+
+test("runStep: listeners a step armed are removed when the step is given up on", async () => {
+  const { createContext, runStep, stepLimits } = await import("../src/run-spec.js");
+  const { STEPS } = await import("../src/spec/steps.js");
+  const before = stepLimits.graceMs;
+  const ctx = createContext({ page: { isClosed: () => false }, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks: [] });
+  let removed = false;
+  STEPS.__arm = async stepCtx => { stepCtx.onStepEnd(() => { removed = true; }); await new Promise(() => {}); };
+  try {
+    stepLimits.graceMs = 20;
+    ctx.index = 1;
+    const record = await runStep(ctx, { op: "__arm", timeout: 50 });
+    assert.equal(record.ok, false);
+    assert.equal(removed, true, "the abandoned step's listeners are gone before the next step starts");
+  } finally {
+    stepLimits.graceMs = before;
+    delete STEPS.__arm;
   }
 });
 

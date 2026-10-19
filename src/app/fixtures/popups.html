@@ -12,6 +12,8 @@
 <p><button type="button" id="open-script">Open page B from script</button></p>
 <p><button type="button" id="open-twice">Open page B twice</button></p>
 <p><button type="button" id="open-later">Open page B after a pause</button></p>
+<p><button type="button" id="open-broken">Open the broken page</button></p>
+<p><button type="button" id="open-code">Open page B with a code</button></p>
 <p><button type="button" id="open-close">Open page B and close it</button></p>
 <p><button type="button" id="nothing">Do nothing</button> <span data-testid="state">idle</span></p>
 <script>
@@ -19,6 +21,8 @@ const open = () => window.open("/fixtures/nav-b.html", "_blank");
 document.getElementById("open-script").addEventListener("click", open);
 document.getElementById("open-twice").addEventListener("click", () => { open(); open(); });
 document.getElementById("open-later").addEventListener("click", () => setTimeout(open, 600));
+document.getElementById("open-broken").addEventListener("click", () => window.open("/fixtures/broken.html", "_blank"));
+document.getElementById("open-code").addEventListener("click", () => window.open("/fixtures/nav-b.html?code=s3cretvalue1#frag", "_blank"));
 document.getElementById("open-close").addEventListener("click", () => { open().close(); });
 document.getElementById("nothing").addEventListener("click", () => { document.querySelector('[data-testid="state"]').textContent = "clicked"; });
 </script>

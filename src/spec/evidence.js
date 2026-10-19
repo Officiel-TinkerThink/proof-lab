@@ -12,6 +12,20 @@ function clipText(text, limit) {
   return text.length > limit ? `${text.slice(0, limit)}... [${text.length - limit} more characters]` : text;
 }
 
+// Console and page-error text is the app's own and can carry a credential it logged by mistake. Anything shaped like
+// one is replaced before the text reaches a receipt or the evidence file; the key name stays, so the line is still useful.
+const SECRET_PATTERNS = [
+  [/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{4,}/g, "[redacted jwt]"],
+  [/\b(Bearer|Basic)\s+[\w.~+/=-]{8,}/gi, "$1 [redacted]"],
+  [/\b([\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|authorization|session(?:id)?)[\w-]*)(["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic)\s+)?[^\s"'&,;]{3,}/gi, "$1$2[redacted]"],
+  [/(\/\/[^/\s:@]+:)[^/\s@]+@/g, "$1[redacted]@"],
+  [/\b[A-Fa-f0-9]{32,}\b/g, "[redacted hex]"],
+  [/\b[A-Za-z0-9+_-]{40,}={0,2}(?![A-Za-z0-9+_-])/g, "[redacted long value]"],
+];
+export function redactSecrets(text) {
+  return SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), String(text));
+}
+
 // Long strings and large structures are cut in the receipt; the full value stays in the evidence file.
 export function clipValue(value, limit = CLIP_CHARS) {
   if (typeof value === "string") return clipText(value, limit);

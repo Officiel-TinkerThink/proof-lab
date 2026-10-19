@@ -19,6 +19,19 @@ const ACTUAL_TEXT_CHARS = 200;
 // A text expectation is a string (equals) or an object with one of equals, contains, matches (and flags).
 export const matchOf = value => matcher(typeof value === "string" ? { equals: value } : value);
 
+// A popup address can carry a code or token in its query or fragment: the evidence keeps the origin and path only.
+export function hideQuery(url) {
+  try {
+    const parsed = new URL(url);
+    // about:blank has no origin; data: and blob: addresses can hold the content itself, so only the scheme is kept.
+    if (parsed.protocol === "about:") return clipValue(url, 100);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return `${parsed.protocol}[hidden]`;
+    return `${parsed.origin}${parsed.pathname}${parsed.search ? "?[query hidden]" : ""}${parsed.hash ? "#[hash hidden]" : ""}`;
+  } catch {
+    return clipValue(url, 100);
+  }
+}
+
 const without = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
 
 // A promise that can be resolved from outside, for "the event happened".
@@ -135,7 +148,7 @@ const ARM = {
       off: () => page.off("popup", handler),
       async evaluate(ms) {
         if (block.appears === false) {
-          return { pass: found === null, expected: { popup: "none" }, actual: found === null ? null : { url: found.url() } };
+          return { pass: found === null, expected: { popup: "none" }, actual: found === null ? null : { url: hideQuery(found.url()) } };
         }
         const expected = without({
           popup: "opens",
@@ -150,7 +163,8 @@ const ARM = {
           error = firstLine(loadError);
         }
         const title = await bounded(found.title(), 2000, "reading the title").catch(() => null);
-        const actual = { url: found.url(), title: title === null ? null : clipValue(title, ACTUAL_TEXT_CHARS) };
+        const address = found.url();
+        const actual = { url: hideQuery(address), title: title === null ? null : clipValue(title, ACTUAL_TEXT_CHARS) };
         // The spec carries on in the new tab unless it says not to, or the tab has already closed itself.
         if (block.switchTo !== false && !found.isClosed()) {
           await found.bringToFront().catch(() => {});
@@ -158,7 +172,7 @@ const ARM = {
           if (ctx.epoch === epoch && !found.isClosed()) ctx.page = found;
         }
         const pass = error === undefined
-          && (block.url === undefined || matchOf(block.url).test(actual.url))
+          && (block.url === undefined || matchOf(block.url).test(address))
           && (block.title === undefined || (title !== null && matchOf(block.title).test(title)));
         return { pass, expected, actual, ...(error ? { error } : {}) };
       },
@@ -176,6 +190,8 @@ export async function withExpectations(ctx, step, labelOf, action) {
   const armed = Object.keys(ARM)
     .filter(kind => step.expect[kind] !== undefined)
     .map(kind => ({ kind, block: step.expect[kind], ...ARM[kind](ctx, step.expect[kind]) }));
+  // If the step is given up on, the caller removes the listeners now instead of when this finally settles.
+  ctx.onStepEnd?.(() => { for (const entry of armed) entry.off(); });
   try {
     await action();
     // All waits run together, so two expectations cost the longer of them, not the sum.

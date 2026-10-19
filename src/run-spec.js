@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { clipValue, evidenceText, redactSecrets, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
@@ -43,8 +43,16 @@ function labelOf(step, index) {
 
 // adopt(page) gives a popup the hooks and timeouts of the first page (see openSession); ctx.page moves to a popup on switchTo.
 export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks }) {
+  let current = page;
   const ctx = {
-    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
+    // A tab that closed (the app closed it, or a closeTab that finished late) is replaced by the last tab still open,
+    // so one closed tab does not fail every later step on a page the app did not break.
+    get page() {
+      if (current.isClosed()) current = current.context().pages().at(-1) ?? current;
+      return current;
+    },
+    set page(next) { current = next; },
+    adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
     record(step, pass, expected, actual, error) {
       // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
       if (!pass && step.optional) {
@@ -69,6 +77,9 @@ export async function runStep(ctx, step) {
   const record = { type: "step", step: ctx.index, op: step.op, check: labelOf(step, ctx.index) };
   const target = describeTarget(step);
   if (target) record.target = target;
+  // Listeners a step arms (dialog, popup) are removed when the step ends, also when it was given up on: otherwise an
+  // abandoned step's handler would answer a later step's dialog.
+  const cleanups = [];
   try {
     // The step sees the run through a view whose writes stop counting once the step is over: bounded() only races the
     // step, it cannot cancel it, so a step that hung past its limit and then recovers must not record a check under
@@ -78,6 +89,7 @@ export async function runStep(ctx, step) {
     const stepCtx = Object.create(ctx, {
       record: { value: (...args) => { if (live()) ctx.record(...args); } },
       page: { get: () => ctx.page, set: page => { if (live()) ctx.page = page; } },
+      onStepEnd: { value: cleanup => { cleanups.push(cleanup); } },
     });
     const act = () => STEPS[step.op](stepCtx, step);
     await bounded(step.expect === undefined ? act() : withExpectations(stepCtx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + stepLimits.graceMs + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
@@ -89,6 +101,8 @@ export async function runStep(ctx, step) {
       const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op}${target ? ` ${target}` : ""}).`;
       ctx.record({ ...step, hint }, false, `${step.op} completes`, null, firstLine(error));
     }
+  } finally {
+    for (const cleanup of cleanups) cleanup();
   }
   const suppressed = ctx.suppressed.slice(suppressedBefore);
   if (suppressed.length > 0 && record.skipped === undefined) record.skipped = `optional check failed: ${suppressed[0]}`;
@@ -168,7 +182,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pageErrors = new Set();
   let pageErrorsDropped = 0;
-  const noteError = message => {
+  const noteError = raw => {
+    const message = redactSecrets(raw);
     if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(clipValue(message, 1000));
     else if (!pageErrors.has(clipValue(message, 1000))) pageErrorsDropped += 1;
   };
@@ -204,7 +219,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         onPageError: message => noteError(message),
         onConsole: (level, text) => {
           if (level === "error") noteError(text);
-          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: clipValue(text, 1000) });
+          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: clipValue(redactSecrets(text), 1000) });
           else consoleDropped += 1;
         },
         onResponse: response => {
