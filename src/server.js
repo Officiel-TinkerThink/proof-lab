@@ -14,6 +14,21 @@ export const BUGS = {
     find: "confirmationEl.textContent = record ? CONFIRMATION : \"\";",
     replace: "confirmationEl.textContent = \"\";",
   },
+  // Saves a different value than the visitor typed: the page looks right until the stored record is read.
+  "wrong-email": {
+    find: "email: input.value.trim() };",
+    replace: "email: input.value.trim().split(\"@\")[0] };",
+  },
+  // Tells the visitor they are confirmed when the record says waitlisted.
+  "wrong-status": {
+    find: 'status: "waitlisted"',
+    replace: 'status: "confirmed"',
+  },
+  // Everything works, but the page throws after submit: only an error check sees it.
+  "console-error": {
+    find: "  show(record);\n});",
+    replace: "  show(record);\n  throw new Error(\"analytics failed\");\n});",
+  },
 };
 
 const APP_FILE = fileURLToPath(new URL("./app/index.html", import.meta.url));
