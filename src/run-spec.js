@@ -8,8 +8,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, redactSecrets, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
-import { absentWaitMs, withExpectations } from "./spec/expect.js";
+import { clipValue, evidenceText, redactSecrets, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { absentWaitMs, hideQuery, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
@@ -43,17 +43,15 @@ function labelOf(step, index) {
 
 // adopt(page) gives a popup the hooks and timeouts of the first page (see openSession); ctx.page moves to a popup on switchTo.
 export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks }) {
-  let current = page;
   const ctx = {
-    // A tab that closed (the app closed it, or a closeTab that finished late) is replaced by the last tab still open,
-    // so one closed tab does not fail every later step on a page the app did not break.
-    get page() {
-      if (current.isClosed()) current = current.context().pages().at(-1) ?? current;
-      return current;
-    },
-    set page(next) { current = next; },
-    adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
-    record(step, pass, expected, actual, error) {
+    // A tab the app closed stays the current page: a later step on it fails honestly instead of silently reading another tab.
+    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
+    record(step, pass, rawExpected, rawActual, rawError) {
+      // What the page or the spec shows can hold a credential (an address, a field value, an error that quotes one):
+      // every value is scrubbed here, once, before it can reach the receipt or the evidence file.
+      const expected = scrubValue(rawExpected);
+      const actual = scrubValue(rawActual);
+      const error = rawError === undefined ? undefined : scrubValue(rawError);
       // An optional step is allowed to fail: it leaves no failed check, but the evidence timeline says it did.
       if (!pass && step.optional) {
         ctx.suppressed.push(`${labelOf(step, ctx.index)}: expected ${JSON.stringify(clipValue(expected))}, got ${JSON.stringify(clipValue(actual))}`);
@@ -117,11 +115,11 @@ async function captureContext(page, step, withPicture) {
   const context = { type: "context", step, url: null, title: null, aria: null };
   const records = [context];
   try {
-    context.url = page.url();
-    context.title = await bounded(page.title(), 2000, "reading the title");
+    context.url = hideQuery(page.url());
+    context.title = redactSecrets(await bounded(page.title(), 2000, "reading the title"));
   } catch { /* the page may be gone or frozen */ }
   try {
-    context.aria = clipValue(await page.locator("body").ariaSnapshot({ timeout: 2000 }), ARIA_CHARS);
+    context.aria = clipValue(redactSecrets(await page.locator("body").ariaSnapshot({ timeout: 2000 })), ARIA_CHARS);
   } catch (error) {
     context.ariaError = firstLine(error);
   }
@@ -141,7 +139,7 @@ async function revisionDrift(seen) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(3000), redirect: "manual" });
       const now = response.headers.get(REVISION_HEADER);
-      if (now !== null && now !== revision) return `${new URL(url).pathname} was ${revision} when loaded and is ${now} now`;
+      if (now !== null && now !== revision) return `${redactSecrets(new URL(url).pathname)} was ${revision} when loaded and is ${now} now`;
     } catch { /* an app that cannot be asked again cannot be compared; the run itself stands */ }
   }
   return null;
@@ -229,7 +227,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
             if (!revision) return;
             const url = response.url();
             if (seenRevisions.has(url) && seenRevisions.get(url) !== revision) {
-              changedWhileRunning ??= `${new URL(url).pathname} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
+              changedWhileRunning ??= `${redactSecrets(new URL(url).pathname)} was ${seenRevisions.get(url)} and became ${revision} between two loads`;
             }
             seenRevisions.set(url, revision);
           } catch { /* a response of a page that is already closing */ }

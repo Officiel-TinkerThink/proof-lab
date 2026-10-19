@@ -281,14 +281,70 @@ test("popup: a page error in a tab the app opened by a plain click counts, and t
   assert.doesNotMatch(text, /swordfish99|hunter2hunter2/, "a credential the app logged must not reach the receipt");
 });
 
-test("createContext: a page that closed is replaced by the last open tab", async () => {
+test("closeTab: the run moves to the last other tab before the close settles, and refuses to close the only tab", async () => {
+  const { STEPS } = await import("../src/spec/steps.js");
+  const first = { name: "first", bringToFront: async () => {} };
+  const second = { name: "second", bringToFront: async () => {} };
+  const pages = [first, second];
+  let seenDuringClose = null;
+  const closing = { context: () => ({ pages: () => pages }), close: async () => { seenDuringClose = ctx.page; } };
+  pages.push(closing);
+  const ctx = { page: closing };
+  await STEPS.closeTab(ctx, { op: "closeTab" });
+  assert.equal(seenDuringClose, second, "ctx.page already points at the next tab when the close runs");
+  assert.equal(ctx.page, second);
+  const lone = { context: () => ({ pages: () => [lone] }), close: async () => { throw new Error("must not close"); } };
+  await assert.rejects(STEPS.closeTab({ page: lone }, { op: "closeTab" }), /only open tab/);
+});
+
+test("redactSecrets: schemes, key variants, quoted and encoded values, and key material", () => {
+  const cases = [
+    ["Authorization: ApiKey 1234567890abcdef", "Authorization: [redacted]"],
+    ["password: correct horse battery", "password: [redacted]"],
+    ['login failed password="ab cd"', 'login failed password="[redacted]"'],
+    ['{"password":"x y z"}', '{"password":"[redacted]"}'],
+    ['{\\"token\\":\\"abc def\\"}', '{\\"token\\":\\"[redacted]"}'],
+    ["a?token%3Dabcdef1&x=1", "a?token%3D[redacted]&x=1"],
+    ["Cookie: sid=abc123; theme=dark", "Cookie: [redacted]"],
+    ["db_password=hunter2 private_key=zz", "db_password=[redacted] private_key=[redacted]"],
+    ["http://ada:p/w@ss@example.test/x", "http://ada:[redacted]@example.test/x"],
+    ["key AKIAIOSFODNN7EXAMPLE end", "key [redacted access key] end"],
+    ["tok ghp_abcdefghijklmnopqrstuvwxyz0123456789 x", "tok [redacted token] x"],
+    ["-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY----- done", "[redacted private key] done"],
+    [`blob ${"aB3/".repeat(12)} end`, "blob [redacted long value] end"],
+  ];
+  for (const [input, expected] of cases) assert.equal(redactSecrets(input), expected, input);
+  for (const plain of ["Basic validation failed for field email", "bearer configuration missing", "the author wrote a bypass: ok",
+    "src/app/fixtures/some-long-directory-name/another-long-file-name-here.js", "request id 123e4567-e89b-12d3-a456-426614174000"]) {
+    assert.equal(redactSecrets(plain), plain);
+  }
+  assert.equal(redactSecrets("Basic dXNlcjpwYXNzd29yZA=="), "Basic [redacted]");
+});
+
+test("redactSecrets: a long hostile input finishes quickly", () => {
+  const started = performance.now();
+  redactSecrets("a-".repeat(50_000));
+  redactSecrets(`${"x".repeat(60_000)} token`);
+  redactSecrets(`Basic ${" ".repeat(60_000)}`);
+  assert.ok(performance.now() - started < 2000, "linear-time redaction");
+});
+
+test("hideQuery: a token in the path is hidden too", () => {
+  assert.equal(hideQuery("http://h.test/reset/a1b2c3d4e5f6g7h8i9j0/confirm"), "http://h.test/reset/[hidden]/confirm");
+  assert.equal(hideQuery("http://h.test/items/12345"), "http://h.test/items/12345");
+});
+
+test("scrubValue: every string inside a check value is redacted", async () => {
+  const { scrubValue } = await import("../src/spec/evidence.js");
+  assert.deepEqual(scrubValue({ a: "token=abcdef", b: ["password: x"], n: 3 }), { a: "token=[redacted]", b: ["password: [redacted]"], n: 3 });
+});
+
+test("runStep: a check's actual and error text is scrubbed before it is recorded", async () => {
   const { createContext } = await import("../src/run-spec.js");
-  const open = { name: "open", isClosed: () => false };
-  const closed = { name: "closed", isClosed: () => true, context: () => ({ pages: () => [{ isClosed: () => false, name: "first" }, open] }) };
-  const ctx = createContext({ page: closed, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks: [] });
-  assert.equal(ctx.page, open);
-  ctx.page = closed;
-  assert.equal(ctx.page, open, "a closed page assigned later is repaired the same way");
+  const checks = [];
+  const ctx = createContext({ page: {}, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks });
+  ctx.record({ op: "assertUrl" }, false, "https://a.test/?token=xyz987", "https://a.test/?token=xyz987", "saw token=xyz987");
+  assert.doesNotMatch(JSON.stringify(checks), /xyz987/);
 });
 
 test("runStep: listeners a step armed are removed when the step is given up on", async () => {

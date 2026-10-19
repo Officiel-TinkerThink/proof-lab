@@ -337,10 +337,13 @@ export const STEPS = {
   },
   // Closes the current tab and moves to the last one still open; closing the only tab is a failed step.
   async closeTab(ctx) {
-    const context = ctx.page.context();
-    if (context.pages().length < 2) throw new Error("this is the only open tab");
-    await ctx.page.close();
-    ctx.page = context.pages().at(-1);
-    await ctx.page.bringToFront();
+    const closing = ctx.page;
+    const open = closing.context().pages();
+    if (open.length < 2) throw new Error("this is the only open tab");
+    // The run moves first: a close that finishes late (or a step given up on) cannot leave it on a tab that is gone.
+    const next = open.filter(page => page !== closing).at(-1);
+    ctx.page = next;
+    await closing.close();
+    await next.bringToFront();
   },
 };

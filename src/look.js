@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createContext, runStep } from "./run-spec.js";
 import { startApp } from "./server.js";
-import { clipValue } from "./spec/evidence.js";
+import { clipValue, redactSecrets } from "./spec/evidence.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
@@ -52,7 +52,7 @@ function withoutQuery(url) {
     const parsed = new URL(url);
     // about:, data:, chrome-error: and the like have an opaque or no origin ("null"): show scheme, host and path without query or fragment.
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return clipValue(`${parsed.protocol}${parsed.host ? `//${parsed.host}` : ""}${parsed.pathname}`, 200);
-    return clipValue(`${parsed.origin}${parsed.pathname}`, 200);
+    return clipValue(redactSecrets(`${parsed.origin}${parsed.pathname}`), 200);
   } catch {
     return clipValue(String(url).split("?")[0], 200);
   }
@@ -128,8 +128,8 @@ export async function look({ url, specPath, until, screenshotPath }) {
       timeoutMs: spec?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: spec?.env,
       hooks: {
-        onConsole: (level, text) => { if (consoleRecords.length < MAX_CONSOLE) consoleRecords.push({ level, text: clipValue(text, 300) }); },
-        onPageError: message => { if (pageErrors.length < MAX_PAGE_ERRORS) pageErrors.push(clipValue(message, 300)); },
+        onConsole: (level, text) => { if (consoleRecords.length < MAX_CONSOLE) consoleRecords.push({ level, text: clipValue(redactSecrets(text), 300) }); },
+        onPageError: message => { if (pageErrors.length < MAX_PAGE_ERRORS) pageErrors.push(clipValue(redactSecrets(message), 300)); },
         onResponse: response => {
           try {
             const request = response.request();

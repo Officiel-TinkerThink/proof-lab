@@ -5,7 +5,7 @@
 // If the action itself fails, no expectation is recorded: the step is already a failed check and the missing event is
 // a consequence, not a second finding.
 import { readFile, stat } from "node:fs/promises";
-import { clipValue } from "./evidence.js";
+import { clipValue, redactSecrets } from "./evidence.js";
 import { matcher } from "./steps.js";
 import { bounded, firstLine } from "./util.js";
 
@@ -26,9 +26,11 @@ export function hideQuery(url) {
     // about:blank has no origin; data: and blob: addresses can hold the content itself, so only the scheme is kept.
     if (parsed.protocol === "about:") return clipValue(url, 100);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return `${parsed.protocol}[hidden]`;
-    return `${parsed.origin}${parsed.pathname}${parsed.search ? "?[query hidden]" : ""}${parsed.hash ? "#[hash hidden]" : ""}`;
+    // A reset link keeps its token in the path: a segment of 16 or more characters that mixes letters and digits is hidden.
+    const path = parsed.pathname.split("/").map(segment => (segment.length >= 16 && /\d/.test(segment) && /[A-Za-z]/.test(segment) ? "[hidden]" : segment)).join("/");
+    return redactSecrets(`${parsed.origin}${path}${parsed.search ? "?[query hidden]" : ""}${parsed.hash ? "#[hash hidden]" : ""}`);
   } catch {
-    return clipValue(url, 100);
+    return "[unparseable address]"; // the raw text could hold a query
   }
 }
 
@@ -74,7 +76,7 @@ const ARM = {
       off: () => page.off("dialog", handler),
       async evaluate() {
         const first = seen[0] ?? null;
-        const actual = first === null ? null : { type: first.type, message: clipValue(first.message, ACTUAL_TEXT_CHARS), answered: answer, ...(seen.length > 1 ? { dialogs: seen.length } : {}) };
+        const actual = first === null ? null : { type: first.type, message: clipValue(redactSecrets(first.message), ACTUAL_TEXT_CHARS), answered: answer, ...(seen.length > 1 ? { dialogs: seen.length } : {}) };
         if (block.appears === false) return { pass: first === null, expected: { dialog: "none" }, actual };
         const expected = without({ dialog: "appears", type: block.type, message: block.message === undefined ? undefined : matchOf(block.message).label });
         const pass = first !== null
@@ -118,7 +120,7 @@ const ARM = {
               pass = false;
             } else {
               const text = await readFile(path, "utf8");
-              actual.content = clipValue(text, ACTUAL_TEXT_CHARS);
+              actual.content = clipValue(redactSecrets(text), ACTUAL_TEXT_CHARS);
               pass = pass && matchOf(block.content).test(text);
             }
           }
@@ -164,7 +166,7 @@ const ARM = {
         }
         const title = await bounded(found.title(), 2000, "reading the title").catch(() => null);
         const address = found.url();
-        const actual = { url: hideQuery(address), title: title === null ? null : clipValue(title, ACTUAL_TEXT_CHARS) };
+        const actual = { url: hideQuery(address), title: title === null ? null : clipValue(redactSecrets(title), ACTUAL_TEXT_CHARS) };
         // The spec carries on in the new tab unless it says not to, or the tab has already closed itself.
         if (block.switchTo !== false && !found.isClosed()) {
           await found.bringToFront().catch(() => {});

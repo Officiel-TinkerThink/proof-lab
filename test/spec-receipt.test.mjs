@@ -89,7 +89,8 @@ test("many failures: the receipt lists the first 20 and counts the rest, the evi
 });
 
 test("long values are clipped in the receipt and whole in the evidence", TIMEOUT, async () => {
-  const long = "q".repeat(1000);
+  // Words, not one opaque run: a 40+ character run of letters is credential-shaped and is redacted on purpose.
+  const long = "word ".repeat(200);
   const spec = page("/fixtures/forms.html", [
     { op: "fill", label: "Bio", value: long },
     { op: "assertValue", check: "bio is short", label: "Bio", equals: "x", timeout: 0 },

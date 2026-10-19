@@ -14,16 +14,45 @@ function clipText(text, limit) {
 
 // Console and page-error text is the app's own and can carry a credential it logged by mistake. Anything shaped like
 // one is replaced before the text reaches a receipt or the evidence file; the key name stays, so the line is still useful.
+// Names that mark a value as a credential. The long ones match inside a longer key (db_password, x-auth-token); the
+// short ones only as the whole key, so "author" and "bypass" are left alone.
+const KEY = String.raw`(?:\b[\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credentials?|cookie|session(?:id)?)[\w-]*|\b(?:pass|auth|sid)\b)`;
+// The separator can be escaped or url-encoded: password=, "password": , \"password\":, password%3D.
+const KEY_END = String.raw`\\?["']?\s*`;
+const BASE64 = "A-Za-z0-9+/_-";
+// "Basic validation" is prose; "Basic dXNlcjpwYXNz" is not: a scheme value needs a digit, + / = or at least 20 characters.
+const SCHEME_VALUE = String.raw`(?:(?=[\w.~+/=-]*[\d+/=])[\w.~+/=-]{8,}|[\w.~+/=-]{20,})`;
 const SECRET_PATTERNS = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted private key]"],
   [/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{4,}/g, "[redacted jwt]"],
-  [/\b(Bearer|Basic)\s+[\w.~+/=-]{8,}/gi, "$1 [redacted]"],
-  [/\b([\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|authorization|session(?:id)?)[\w-]*)(["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic)\s+)?[^\s"'&,;]{3,}/gi, "$1$2[redacted]"],
-  [/(\/\/[^/\s:@]+:)[^/\s@]+@/g, "$1[redacted]@"],
+  [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted access key]"],
+  [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|xox[abprs]-[\w-]{10,})/g, "[redacted token]"],
+  [new RegExp(String.raw`\b(Bearer|Basic|Digest|OAuth|Token|ApiKey)\s+${SCHEME_VALUE}`, "gi"), "$1 [redacted]"],
+  // "key: value" with an unquoted value takes the rest of the line: a passphrase or "ApiKey 123" has spaces in it.
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?::|%3[Aa])\s*)[^\s\\"'][^\r\n"']*`, "gi"), "$1$2[redacted]"],
+  // A quoted value of any length keeps its quotes; "key=value" runs up to the next space.
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*\\?["'])[^"']*`, "gi"), "$1$2[redacted]"],
+  [new RegExp(String.raw`(${KEY})(${KEY_END}(?:[:=]|%3[AaDd])\s*)[^\s"'&,;\\]+`, "gi"), "$1$2[redacted]"],
+  [/(\/\/[^/\s:@]+:)\S+@/g, "$1[redacted]@"],
   [/\b[A-Fa-f0-9]{32,}\b/g, "[redacted hex]"],
   [/\b[A-Za-z0-9+_-]{40,}={0,2}(?![A-Za-z0-9+_-])/g, "[redacted long value]"],
+  // Base64 with "/" also looks like a path: it counts as a value only when it mixes digits and both letter cases.
+  [new RegExp(`(?<![${BASE64}])(?=[${BASE64}]*\\d)(?=[${BASE64}]*[a-z])(?=[${BASE64}]*[A-Z])[${BASE64}]{40,}={0,2}`, "g"), "[redacted long value]"],
 ];
+// Text of any length is accepted (a download, a console line); the part past this is dropped, which keeps every pattern
+// linear in practice. Every caller clips the result to far less.
+const MAX_REDACT_CHARS = 10_000;
 export function redactSecrets(text) {
-  return SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), String(text));
+  const input = String(text).slice(0, MAX_REDACT_CHARS);
+  return SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), input);
+}
+
+// redactSecrets over every string inside a value (a check's expected and actual can be text or a small object).
+export function scrubValue(value, depth = 0) {
+  if (typeof value === "string") return redactSecrets(value);
+  if (depth > 6 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(item => scrubValue(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubValue(item, depth + 1)]));
 }
 
 // Long strings and large structures are cut in the receipt; the full value stays in the evidence file.
