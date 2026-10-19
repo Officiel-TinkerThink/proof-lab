@@ -190,6 +190,12 @@ test("look reports the status and URL of the page it ends on, not of the first l
     assert.doesNotMatch(JSON.stringify(result), /secret|token=/);
     const before = await look({ specPath, until: 1 });
     assert.equal(before.status, 200);
+
+    const blankPath = join(dir, "to-blank.json");
+    await writeFile(blankPath, JSON.stringify({ name: "to-blank", steps: [...SIMPLE, { op: "goto", url: "about:blank" }] }));
+    const blank = await look({ specPath: blankPath });
+    assert.equal(blank.url, "about:blank", "an opaque-origin URL is shown as written");
+    assert.equal(blank.status, null, "a page reached without a response has no status, not the earlier page's 200");
   });
 });
 

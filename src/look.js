@@ -50,6 +50,8 @@ export function actionableElements(aria) {
 function withoutQuery(url) {
   try {
     const parsed = new URL(url);
+    // about:, data: and the like have an opaque origin ("null"): show them as written, without query or fragment.
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return clipValue(`${parsed.protocol}${parsed.pathname}`, 200);
     return clipValue(`${parsed.origin}${parsed.pathname}`, 200);
   } catch {
     return clipValue(String(url).split("?")[0], 200);
@@ -117,7 +119,9 @@ export async function look({ url, specPath, until, screenshotPath }) {
     const consoleRecords = [];
     const pageErrors = [];
     const failedRequests = [];
-    let documentStatus = null;
+    // Status of each top-level document response by URL. The report asks for the page it ends on, so a page that was
+    // reached without a response (about:blank, history, cache) gets no status instead of an earlier page's.
+    const documentStatuses = new Map();
     const failed = entry => { if (failedRequests.length < MAX_FAILED_REQUESTS) failedRequests.push(entry); };
     session = await openSession({
       firstUrl,
@@ -128,8 +132,9 @@ export async function look({ url, specPath, until, screenshotPath }) {
         onResponse: response => {
           try {
             const request = response.request();
-            // The latest top-level navigation answers for the page the report describes (redirect hops are overwritten by the last).
-            if (request.resourceType() === "document" && request.frame().parentFrame() === null) documentStatus = response.status();
+            if (request.resourceType() === "document" && request.frame().parentFrame() === null && (documentStatuses.has(response.url()) || documentStatuses.size < 200)) {
+              documentStatuses.set(response.url(), response.status()); // a later load of the same URL replaces the earlier status
+            }
             if (response.status() >= 400) failed({ url: withoutQuery(response.url()), status: response.status() });
           } catch { /* a response of a page that is already closing */ }
         },
@@ -160,7 +165,7 @@ export async function look({ url, specPath, until, screenshotPath }) {
     return {
       url: withoutQuery(session.page.url()),
       title,
-      status: documentStatus,
+      status: documentStatuses.get(session.page.url().split("#")[0]) ?? null,
       replayed,
       aria: facts.aria === null ? null : clipValue(facts.aria, ARIA_CHARS),
       elements: facts.aria === null ? [] : actionableElements(facts.aria),
