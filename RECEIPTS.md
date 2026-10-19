@@ -72,9 +72,10 @@ Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a drive
 
 - **Windows directory flush.** Node cannot open a directory to flush it on Windows, so a rename is not flushed there. The
   file itself is flushed before the rename. This is recorded as a residual risk.
-- **Power loss at the host.** Not tested. The guest-level power-cut test below covers the guest's flush path. Cutting power to
-  the host (the disk cache of the host itself) needs block-device fault injection on a host, which was not available.
-  Run a host-level test before any validation use.
+- **Power loss at the host.** Not tested. The guest-level power-cut test below covers the guest's flush path. A host-level
+  attempt on 2026-10-19 used dm-flakey under ext4 in WSL: its self-test passed, but the no-flush control also passed, so
+  the harness does not yet separate durable from non-durable writes and its baseline result is not evidence. The WSL
+  changes were reverted. Run a discriminating host-level test before any validation use.
 - **Windows read-only attribute.** Only the write bit maps to the read-only attribute on Windows, so 0444 does not stop the
   file's owner. The code clears the flag before it removes a file it wrote (`discard`), and does not rely on the Node
   unlink branch for that. The Windows path is not exercised by the Linux container tests.
@@ -86,4 +87,5 @@ Earlier runs were invalid (guest init PATH, a VM that hung on power-off, a drive
 ## Open items for the QMS owner
 
 - Anchor store owner and location (see Chain).
-- Calendar rotation interval: not set. The NIST SP 800-57 cryptoperiod table could not be read in this environment.
+- Calendar rotation interval: not set. NIST SP 800-57 Part 1 Rev. 5, Table 1 (p. 45), row 3 "Symmetric Authentication Key":
+  originator-usage period < 2 years; recipient-usage period < OUP + 3 years. The interval is the QMS owner's, within that limit.
