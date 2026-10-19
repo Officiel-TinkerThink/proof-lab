@@ -32,7 +32,7 @@ const MAX_REVISION_RECHECKS = 50;
 const ARIA_CHARS = 8000;
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
-const STEP_GRACE_MS = 20000;
+export const stepLimits = { graceMs: 20000 }; // an object so a test can shorten it
 
 // "check" names the step in the receipt. "name" without a role is the older spelling of it.
 function labelOf(step, index) {
@@ -70,8 +70,17 @@ export async function runStep(ctx, step) {
   const target = describeTarget(step);
   if (target) record.target = target;
   try {
-    const act = () => STEPS[step.op](ctx, step);
-    await bounded(step.expect === undefined ? act() : withExpectations(ctx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + STEP_GRACE_MS + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
+    // The step sees the run through a view whose writes stop counting once the step is over: bounded() only races the
+    // step, it cannot cancel it, so a step that hung past its limit and then recovers must not record a check under
+    // the next step's number or move the run to another tab.
+    const epoch = ctx.epoch;
+    const live = () => ctx.epoch === epoch;
+    const stepCtx = Object.create(ctx, {
+      record: { value: (...args) => { if (live()) ctx.record(...args); } },
+      page: { get: () => ctx.page, set: page => { if (live()) ctx.page = page; } },
+    });
+    const act = () => STEPS[step.op](stepCtx, step);
+    await bounded(step.expect === undefined ? act() : withExpectations(stepCtx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + stepLimits.graceMs + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
   } catch (error) {
     ctx.epoch += 1; // the step is given up on: anything it still has in flight must not touch the run any more
     if (step.optional) {

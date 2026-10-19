@@ -205,6 +205,36 @@ test("popup: a popup that closes itself leaves a receipt, not an ERROR, and the 
   assert.equal(both.verdict, "PASS", explain(both));
 });
 
+test("runStep: a step that hung past its limit cannot record a check or move the run afterwards", async () => {
+  const { createContext, runStep, stepLimits } = await import("../src/run-spec.js");
+  const { STEPS } = await import("../src/spec/steps.js");
+  const before = stepLimits.graceMs;
+  const pageA = { name: "a" };
+  const pageB = { name: "b" };
+  const checks = [];
+  const ctx = createContext({ page: pageA, appUrl: "http://127.0.0.1:1", specDir: ".", timeoutMs: 50, checks });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  STEPS.__hang = async stepCtx => { await gate; stepCtx.record({ op: "__hang" }, true, "late", "late"); stepCtx.page = pageB; };
+  STEPS.__quick = async stepCtx => { stepCtx.record({ op: "__quick" }, true, "quick", "quick"); };
+  try {
+    stepLimits.graceMs = 20;
+    ctx.index = 1;
+    const hung = await runStep(ctx, { op: "__hang", timeout: 50 });
+    assert.equal(hung.ok, false, "the step that hung is a failed check");
+    ctx.index = 2;
+    await runStep(ctx, { op: "__quick" });
+    release(); // the hung step now wakes up, in the middle of the run
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(checks.map(check => [check.step, check.pass]), [[1, false], [2, true]], "no late check under any step number");
+    assert.equal(ctx.page, pageA, "a late tab switch does not move the run");
+  } finally {
+    stepLimits.graceMs = before;
+    delete STEPS.__hang;
+    delete STEPS.__quick;
+  }
+});
+
 test("switchTab and closeTab: a tab that is not there is a failed step with a hint, not an ERROR", TIMEOUT, async () => {
   const receipt = await runInline(page(POPUPS, [
     { op: "switchTab", index: 5, hint: "open the popup first" },

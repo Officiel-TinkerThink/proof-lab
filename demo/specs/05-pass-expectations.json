@@ -1,0 +1,43 @@
+{
+  "name": "demo-05-pass-expectations",
+  "steps": [
+    {
+      "op": "goto",
+      "url": "/fixtures/popups.html"
+    },
+    {
+      "op": "click",
+      "role": "button",
+      "name": "Open page B from script",
+      "expect": {
+        "popup": {
+          "title": "Page B"
+        }
+      }
+    },
+    {
+      "op": "assertTitle",
+      "equals": "Page B"
+    },
+    {
+      "op": "switchTab",
+      "index": 0
+    },
+    {
+      "op": "click",
+      "role": "button",
+      "name": "Do nothing",
+      "expect": {
+        "popup": {
+          "appears": false,
+          "within": 300
+        }
+      }
+    },
+    {
+      "op": "assertText",
+      "testId": "state",
+      "equals": "clicked"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "demo-07-error-no-checks",
+  "steps": [
+    {
+      "op": "click",
+      "role": "button",
+      "name": "Join waitlist"
+    }
+  ]
+}

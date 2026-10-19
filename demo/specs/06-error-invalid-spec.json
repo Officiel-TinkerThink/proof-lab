@@ -1,0 +1,11 @@
+{
+  "name": "demo-06-error-invalid-spec",
+  "steps": [
+    {
+      "op": "assertText",
+      "selector": "h1",
+      "equals": "x",
+      "colour": "red"
+    }
+  ]
+}

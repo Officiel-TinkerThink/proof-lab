@@ -160,8 +160,8 @@ test("cookies: set, assert, clear; an httpOnly value is never written to the rec
     assert.equal(receipt.verdict, "FAIL");
     const failed = failedChecks(receipt);
     assert.deepEqual(failed.map(check => check.step), [4, 5, 6, 7, 8], explain(receipt));
-    assert.match(failed[0].actual, /^\(cookie, 7 characters, sha256 [0-9a-f]{8}\)$/);
-    assert.match(failed[0].expected, /^equals \(5 characters, sha256 [0-9a-f]{8}\)$/);
+    assert.match(failed[0].actual, /^\(cookie, 7 characters, hmac [0-9a-f]{8}\)$/);
+    assert.match(failed[0].expected, /^equals \(5 characters, hmac [0-9a-f]{8}\)$/);
     assert.notEqual(failed[0].actual.slice(-10), failed[0].expected.slice(-10), "different values show different fingerprints");
     assert.equal(failed[4].error, "cookie not found", "a missing cookie fails also with not");
     // The evidence file also holds the page's own url and text (this fixture endpoint prints the value it sets), which is

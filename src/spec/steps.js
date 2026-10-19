@@ -266,7 +266,7 @@ export const STEPS = {
     // A cookie value is often a session token, and whether it is httpOnly is known only after reading it: the receipt
     // never carries the expected value, only how it is compared and its length.
     // A short fingerprint stands in for the value: two different values show two different fingerprints on a mismatch.
-    const print = value => `${String(value).length} characters, sha256 ${createHmac("sha256", FINGERPRINT_KEY).update(String(value)).digest("hex").slice(0, 8)}`;
+    const print = value => `${String(value).length} characters, hmac ${createHmac("sha256", FINGERPRINT_KEY).update(String(value)).digest("hex").slice(0, 8)}`;
     const expected = match === null
       ? { exists: step.exists }
       : `${match.kind} (${match.kind === "equals" ? print(match.value) : `${String(match.value).length} characters`})`;
