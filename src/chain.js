@@ -2,11 +2,15 @@
 // Must stay byte-compatible with proof-lab-go/main.go. test/chain.test.mjs pins the shared fixture.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { chmod, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { hostname } from "node:os";
 
 export const KEY_ENV = "PROOF_LAB_KEY";
 export const MIN_KEY_BYTES = 32;
 export const GENESIS = "GENESIS";
+// Lock file in the receipts directory. Its name does not end in .json, so receiptFiles never lists it.
+export const LOCK_NAME = ".chain.lock";
+export const LOCK_TIMEOUT_MS = 30000;
 const REVISION = /^[0-9a-f]{12}$/;
 
 // Missing or short key: throw. A receipt without a signature is not evidence, so nothing is written.
@@ -14,6 +18,20 @@ export function signingKey(env = process.env) {
   const key = env[KEY_ENV] ?? "";
   if (Buffer.byteLength(key, "utf8") < MIN_KEY_BYTES) {
     throw new Error(`${KEY_ENV} must be set to at least ${MIN_KEY_BYTES} bytes; receipts are signed and none is written without a key`);
+  }
+  return Buffer.from(key, "utf8");
+}
+
+// Key from a file, for --key-file. A key file never enters the environment, so child processes and
+// /proc/<pid>/environ cannot read it. Like ssh's private keys, it must not be readable by group or others (POSIX only).
+export async function signingKeyFromFile(path) {
+  const info = await stat(path);
+  if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
+    throw new Error(`key file ${path} is readable by group or others (mode ${(info.mode & 0o777).toString(8)}); set it to 0600`);
+  }
+  const key = (await readFile(path, "utf8")).replace(/[\r\n]+$/, "");
+  if (Buffer.byteLength(key, "utf8") < MIN_KEY_BYTES) {
+    throw new Error(`key file must hold at least ${MIN_KEY_BYTES} bytes; receipts are signed and none is written without a key`);
   }
   return Buffer.from(key, "utf8");
 }
@@ -78,6 +96,16 @@ async function discard(path) {
   await rm(path, { force: true }).catch(() => {});
 }
 
+// Flushes a directory's entries to stable storage, so a completed rename survives a crash.
+async function syncDir(dir) {
+  const handle = await open(dir, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 // Atomic write: a uniquely named temp file in the same directory, flushed, then renamed over the target.
 // A failure removes the temp file, so no partial *.json is ever left behind. The result is read-only (0444): this
 // blocks accidental edits; it does not stop the file's owner, so the anchor (--expect-head) is the tamper check.
@@ -89,6 +117,9 @@ export async function writeAtomic(path, data) {
     await handle.sync();
     await handle.close();
     await rename(tmp, path);
+    // rename(2) is not durable until the directory entry is flushed (fsync(2)). Windows cannot open a directory to
+    // sync it, so there the rename is not flushed by this code; that gap is recorded as unresolved.
+    if (process.platform !== "win32") await syncDir(dirname(path));
   } catch (error) {
     await handle.close().catch(() => {});
     await rm(tmp, { force: true });
@@ -130,7 +161,97 @@ export async function latestHash(dir) {
 
 // Writes the screenshot (if any) and the signed receipt. On any failure the screenshot and the receipt fields are
 // rolled back and the error is thrown, so the caller can report ERROR.
-export async function writeReceipt(receipt, { shot, key, dir }) {
+// Advisory lock around the head read and the receipt write, so two writers cannot link to the same head. Node has no
+// flock, so the lock is an exclusive create of LOCK_NAME holding {"pid", "host"}, removed on exit.
+// A lock is reclaimed only when its owner is provably gone: same host and the pid no longer exists. A lock held by a
+// live process or by another host is never taken over, by age or otherwise; the wait then ends with an error.
+// Known limits (recorded in the README): a pid can be reused after a crash, so a stale lock can look live until the
+// pid is reused; and two reclaimers racing on the same stale lock can, in a narrow window, remove a fresh lock.
+export async function withChainLock(dir, timeoutMs, fn) {
+  const lockPath = join(dir, LOCK_NAME);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await tryCreateLock(lockPath)) break;
+    if (await reclaimIfStale(lockPath)) continue;
+    if (Date.now() >= deadline) {
+      throw new Error(`receipts in ${dir} are locked by another writer; if no writer is running, remove ${LOCK_NAME}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(lockPath, { force: true });
+  }
+}
+
+async function tryCreateLock(lockPath) {
+  let handle;
+  try {
+    handle = await open(lockPath, "wx");
+  } catch (error) {
+    if (error.code === "EEXIST") return false;
+    throw error;
+  }
+  try {
+    await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname() }));
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await rm(lockPath, { force: true });
+    throw error;
+  }
+  await handle.close();
+  return true;
+}
+
+// Returns true when the lock was removed (or already gone) and the caller should retry at once.
+async function reclaimIfStale(lockPath) {
+  const owner = await readLockOwner(lockPath);
+  if (!owner || owner.host !== hostname() || processAlive(owner.pid)) return false;
+  const claimed = `${lockPath}.stale-${randomBytes(6).toString("hex")}`;
+  try {
+    await rename(lockPath, claimed);
+  } catch (error) {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  }
+  const taken = await readLockOwner(claimed);
+  if (taken && taken.pid === owner.pid && taken.host === owner.host) {
+    await rm(claimed, { force: true });
+    return true;
+  }
+  // The name now holds a lock a live writer created after our check: put it back if the name is still free.
+  await link(claimed, lockPath).catch(() => {});
+  await rm(claimed, { force: true });
+  return false;
+}
+
+async function readLockOwner(path) {
+  let text;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const owner = JSON.parse(text);
+    return Number.isInteger(owner?.pid) && owner.pid > 0 && typeof owner.host === "string" ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+export async function writeReceipt(receipt, { shot, key, dir, lockTimeoutMs = LOCK_TIMEOUT_MS }) {
   await mkdir(dir, { recursive: true });
   const stamp = fileStamp(receipt.at);
   const rev = revisionOrUnknown(receipt.revision);
@@ -141,15 +262,24 @@ export async function writeReceipt(receipt, { shot, key, dir }) {
       await writeAtomic(shotPath, shot);
       receipt.screenshot = shotPath;
     }
-    // Fields are re-appended so keyId and prevHash sit after `next`, the order the Go struct writes them in.
-    delete receipt.keyId;
-    delete receipt.prevHash;
-    receipt.keyId = keyIdOf(key);
-    receipt.prevHash = await latestHash(dir);
-    const body = canonicalBody(receipt);
-    receipt.hash = sha256Hex(body);
-    receipt.mac = signBody(body, key);
-    await writeAtomic(join(dir, `${stamp}-${rev}.json`), fileBody(receipt));
+    await withChainLock(dir, lockTimeoutMs, async () => {
+      // The head is the newest receipt by name, and verify reads names in that order. A new receipt must sort after
+      // the head, or linking it would fork the chain. Refusing is the fail-closed choice; the run can be repeated.
+      const newName = `${stamp}-${rev}.json`;
+      const existing = await receiptFiles(dir);
+      if (existing.length > 0 && basename(existing.at(-1)) >= newName) {
+        throw new Error(`receipt ${newName} is not later than the chain head ${basename(existing.at(-1))}; not written, so the chain does not fork`);
+      }
+      // Fields are re-appended so keyId and prevHash sit after `next`, the order the Go struct writes them in.
+      delete receipt.keyId;
+      delete receipt.prevHash;
+      receipt.keyId = keyIdOf(key);
+      receipt.prevHash = await latestHash(dir);
+      const body = canonicalBody(receipt);
+      receipt.hash = sha256Hex(body);
+      receipt.mac = signBody(body, key);
+      await writeAtomic(join(dir, newName), fileBody(receipt));
+    });
   } catch (error) {
     if (shotPath) await discard(shotPath);
     receipt.screenshot = null;

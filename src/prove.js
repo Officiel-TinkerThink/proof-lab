@@ -1,16 +1,19 @@
 // prove: drive the waitlist app as a fresh visitor, record checks, write a signed receipt.
 // Verdicts: PASS (exit 0), FAIL (exit 1), ERROR = can't tell (exit 2).
-// Verify: node src/prove.js --verify [--receipts <dir>] [--expect-head <hash>]  (0 intact, 1 tampered, 2 cannot verify)
+// Key: every run and every verify takes --key-file <path> (a 0600 file). PROOF_LAB_KEY in the environment is refused.
+// Verify: node src/prove.js --verify --key-file <path> [--receipts <dir>] [--expect-head <hash>]  (0 intact, 1 tampered, 2 cannot verify)
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { startApp } from "./server.js";
 import {
   GENESIS,
+  KEY_ENV,
   environmentWithoutKey,
   fixedStamp,
   latestHash,
   signingKey,
+  signingKeyFromFile,
   verifyChain,
   writeReceipt,
 } from "./chain.js";
@@ -168,13 +171,21 @@ export async function verifyReceipts({ receiptsDir = DEFAULT_RECEIPTS, key, expe
   return 0;
 }
 
-// CLI: node src/prove.js [--url <http://...>] [--bug <name>] [--receipts <dir>] | --verify [--expect-head <hash>]
+// CLI: node src/prove.js --key-file <path> [--url <http://...>] [--bug <name>] [--receipts <dir>] | --verify [--expect-head <hash>]
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   let key;
   try {
-    key = signingKey();
+    // The key comes only from --key-file. A key variable in the environment stays readable through /proc/<pid>/environ
+    // and by child processes, even after the variable is deleted, so the run refuses to start while it is set.
+    if (Object.hasOwn(process.env, KEY_ENV)) {
+      throw new Error(`${KEY_ENV} is set in the environment; unset it and pass the key with --key-file <path>`);
+    }
+    if (!flag("--key-file")) {
+      throw new Error("--key-file <path> is required: the signing key is read from a 0600 file, never from the environment");
+    }
+    key = await signingKeyFromFile(flag("--key-file"));
   } catch (error) {
     console.error(firstLine(error));
     process.exitCode = 2;

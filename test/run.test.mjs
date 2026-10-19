@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,12 +10,21 @@ import { fileURLToPath } from "node:url";
 const PROVE = fileURLToPath(new URL("../src/prove.js", import.meta.url));
 const TEST_KEY = "run-test-key-not-a-secret-0123456789abcdef";
 
+// The key goes to the prover in a 0600 file, never in the environment (the prover refuses PROOF_LAB_KEY).
+async function keyFileWith(key) {
+  const dir = await mkdtemp(join(tmpdir(), "proof-key-"));
+  const path = join(dir, "key");
+  await writeFile(path, `${key}\n`);
+  await chmod(path, 0o600);
+  return path;
+}
+
 async function runProve(args, { key = TEST_KEY } = {}) {
   const receiptsDir = await mkdtemp(join(tmpdir(), "proof-run-"));
   const env = { ...process.env, PROOF_LAB_RECEIPTS: receiptsDir };
-  if (key === null) delete env.PROOF_LAB_KEY;
-  else env.PROOF_LAB_KEY = key;
-  const result = spawnSync(process.execPath, [PROVE, ...args], { encoding: "utf8", timeout: 120_000, env });
+  delete env.PROOF_LAB_KEY;
+  const keyArgs = key === null ? [] : ["--key-file", await keyFileWith(key)];
+  const result = spawnSync(process.execPath, [PROVE, ...keyArgs, ...args], { encoding: "utf8", timeout: 120_000, env });
   const receipt = result.stdout.trim() ? JSON.parse(result.stdout) : null;
   return { exit: result.status, receipt, receiptsDir, stderr: result.stderr };
 }
@@ -56,8 +65,19 @@ test("missing key gives exit 2 and writes no receipt", async () => {
   const { exit, receipt, receiptsDir, stderr } = await runProve([], { key: null });
   assert.equal(exit, 2);
   assert.equal(receipt, null);
-  assert.match(stderr, /PROOF_LAB_KEY must be set/);
+  assert.match(stderr, /--key-file <path> is required/);
   assert.equal(stderr.includes(TEST_KEY), false);
+  assert.deepEqual((await readdir(receiptsDir)), []);
+});
+
+test("a key in the environment is refused with exit 2 and writes no receipt", async () => {
+  const receiptsDir = await mkdtemp(join(tmpdir(), "proof-run-"));
+  const keyPath = await keyFileWith(TEST_KEY);
+  const env = { ...process.env, PROOF_LAB_RECEIPTS: receiptsDir, PROOF_LAB_KEY: TEST_KEY };
+  const result = spawnSync(process.execPath, [PROVE, "--key-file", keyPath], { encoding: "utf8", timeout: 120_000, env });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /PROOF_LAB_KEY is set in the environment/);
+  assert.equal(result.stderr.includes(TEST_KEY), false);
   assert.deepEqual((await readdir(receiptsDir)), []);
 });
 
@@ -70,9 +90,12 @@ test("every receipt carries a hash, a MAC and the previous receipt's hash", asyn
 
 test("verify accepts a receipts directory the run just wrote", async () => {
   const { receiptsDir } = await runProve([]);
-  const verify = spawnSync(process.execPath, [PROVE, "--verify", "--receipts", receiptsDir], {
+  const keyPath = await keyFileWith(TEST_KEY);
+  const env = { ...process.env };
+  delete env.PROOF_LAB_KEY;
+  const verify = spawnSync(process.execPath, [PROVE, "--verify", "--key-file", keyPath, "--receipts", receiptsDir], {
     encoding: "utf8",
-    env: { ...process.env, PROOF_LAB_KEY: TEST_KEY },
+    env,
   });
   assert.equal(verify.status, 0, verify.stdout + verify.stderr);
   assert.match(verify.stdout, /VALID: 1 receipts/);
