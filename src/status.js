@@ -66,7 +66,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   const problems = validateSpec(spec);
   if (problems.length > 0) return answer("CANNOT-TELL", { spec: spec?.name ?? null, advice: [`The spec is invalid: ${problems.join("; ")}. Fix the spec first.`] });
   const specHash = createHash("sha256").update(text).digest("hex").slice(0, 12);
-  const base = { spec: spec.name, specHash };
+  const base = { spec: redactSecrets(spec.name), specHash };
 
   let verified;
   try {
@@ -85,7 +85,7 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   const mine = [];
   for (const file of files) {
     const receipt = JSON.parse(await readFile(file, "utf8"));
-    if (typeof receipt.spec === "string" && receipt.spec.slice(0, receipt.spec.lastIndexOf("@")) === redactSecrets(spec.name)) mine.push({ ...receipt, file });
+    if (typeof receipt.spec === "string" && [spec.name, redactSecrets(spec.name)].includes(receipt.spec.slice(0, receipt.spec.lastIndexOf("@")))) mine.push({ ...receipt, file });
   }
   if (mine.length === 0) return answer("NO-RECEIPT", { ...base, advice: [`No receipt for the spec "${spec.name}" yet. Run it, then ask again.`] });
 
@@ -111,7 +111,8 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
 
   // PASS. It counts only for this spec and this code.
   const reasons = [];
-  if (latest.spec !== specLabel(spec.name, specHash)) reasons.push("the spec changed since this receipt");
+  // The second form is a receipt written before the name was scrubbed.
+  if (![specLabel(spec.name, specHash), `${spec.name}@${specHash}`].includes(latest.spec)) reasons.push("the spec changed since this receipt");
   const revisionNow = await currentRevision(spec);
   common.currentRevision = revisionNow;
   let unverified = false;

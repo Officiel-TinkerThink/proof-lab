@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
-import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactHead, redactSecrets, scrubRecord, specLabel, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
+import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactClip, redactSecrets, scrubRecord, specLabel, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
@@ -191,9 +191,9 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const pageErrors = new Set();
   let pageErrorsDropped = 0;
   const noteError = raw => {
-    const message = redactHead(raw);
-    if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(clipValue(message, 1000));
-    else if (!pageErrors.has(clipValue(message, 1000))) pageErrorsDropped += 1;
+    const message = redactClip(raw, 1000);
+    if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) pageErrors.add(message);
+    else if (!pageErrors.has(message)) pageErrorsDropped += 1;
   };
   const consoleRecords = [];
   let consoleDropped = 0;
@@ -227,7 +227,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         onPageError: message => noteError(message),
         onConsole: (level, text) => {
           if (level === "error") noteError(text);
-          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: clipValue(redactHead(text), 1000) });
+          if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: redactClip(text, 1000) });
           else consoleDropped += 1;
         },
         onResponse: response => {
@@ -330,7 +330,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     { type: "summary", verdict: receipt.verdict, totals, error: receipt.error },
   ];
   records.forEach((record, index) => { records[index] = scrubRecord(record, EVIDENCE_BOOKKEEPING); });
-  const detail = { checks, steps: stepRecords, contexts: contextRecords, console: consoleRecords, pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
+  // The detail a caller gets in process is scrubbed like the files: a consumer added later cannot be the one that leaks.
+  const detail = { checks, steps: scrubValue(stepRecords), contexts: scrubValue(contextRecords), console: scrubValue(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
   // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
   try {

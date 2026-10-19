@@ -558,8 +558,8 @@ test("cycle 8: a key at the end of an aria line does not take the next line; a U
 });
 
 test("cycle 8: redactHead says how much it cut; an address label hides a path token; a regex label is left as written", async () => {
-  const { redactHead, hideAddressText, specLabel } = await import("../src/spec/evidence.js");
-  assert.match(redactHead("x".repeat(60), 50), /\[10 more characters\]$/);
+  const { redactClip, hideAddressText, specLabel } = await import("../src/spec/evidence.js");
+  assert.match(redactClip("x".repeat(60), 50), /\[10 more characters\]$/);
   assert.equal(hideAddressText("http://h/reset/ab12cd34ef56gh78ij/x?c=1"), "http://h/reset/[hidden]/x?[query hidden]");
   assert.equal(specLabel("Session: idle", "0123456789ab"), "Session: [redacted]@0123456789ab");
   const { STEPS } = await import("../src/spec/steps.js");
@@ -579,4 +579,53 @@ test("cycle 8: a look report lists session storage key names", () => {
     const text = formatLook({ url: "http://x/", title: null, status: null, replayed: [], elements: [], testIds: [], storage: { local: ["a"], session: ["[redacted]"] }, frames: 0, console: [], pageErrors: [], failedRequests: [], aria: "- main", screenshot: null });
     assert.match(text, /sessionStorage keys: \[redacted\]/);
   });
+});
+
+test("cycle 9: one cut and one count; colliding keys never overwrite; a host is not a path token; the whole path segment is hidden", async () => {
+  const { redactClip, scrubValue, hideAddressText } = await import("../src/spec/evidence.js");
+  assert.match(redactClip("a".repeat(60000), 1000), /\.\.\. \[59000 more characters\]$/, "counted from the original text");
+  assert.equal(redactClip("short", 1000), "short");
+  const clash = scrubValue(JSON.parse('{"0123456789abcdef0123456789abcdef":1,"fedcba9876543210fedcba9876543210":2,"[redacted hex]#2":3}'));
+  assert.deepEqual(Object.values(clash).sort(), [1, 2, 3], "no field is lost");
+  assert.equal(hideAddressText("https://proof-lab-staging-2026.example.test/home"), "https://proof-lab-staging-2026.example.test/home");
+  assert.equal(hideAddressText("http://h/reset/AbC123dEf456GhI789+JkL"), "http://h/reset/[hidden]");
+});
+
+test("cycle 9: a query after a hash route and a hash in text are hidden; a long JWT payload goes whole; a PIN field is masked", async () => {
+  const { isSensitiveStep } = await import("../src/spec/evidence.js");
+  assert.equal(redactSecrets("went to http://127.0.0.1:4173/#/reset?code=abcd1234efgh ok"), "went to http://127.0.0.1:4173/#[hash hidden] ok");
+  assert.equal(redactSecrets("at http://h/p#access=x1y2 end"), "at http://h/p#[hash hidden] end");
+  assert.equal(redactSecrets(redactSecrets("at http://h/p?a=1#b")), "at http://h/p?[query hidden]", "idempotent, the hash after a query goes with it");
+  const jwt = `eyJhbGciOiJIUzI1NiJ9.${"p".repeat(20000)}.${"s".repeat(500)}`;
+  assert.equal(redactSecrets(`t ${jwt} u`), "t [redacted jwt] u");
+  assert.equal(isSensitiveStep({ op: "assertValue", label: "PIN" }), true);
+});
+
+test("cycle 9: a popup expectation with a regular expression keeps its label", TIMEOUT, async () => {
+  const { addressLabel } = await import("../src/spec/evidence.js");
+  assert.equal(addressLabel({ kind: "matches", label: "matches /popup\\?id=\\d+/" }), "matches /popup\\?id=\\d+/");
+  assert.equal(addressLabel({ kind: "contains", label: 'contains "/a?b=1"' }), 'contains "/a?[query hidden]"');
+});
+
+test("cycle 9b: camelCase names, a password with a question mark, a value on the next line, HTML-escaped values", async () => {
+  const { scrubValue, isSensitiveStep } = await import("../src/spec/evidence.js");
+  assert.doesNotMatch(redactSecrets("dbPass=hunter22 authHeader: abc123"), /hunter22|abc123/);
+  assert.equal(redactSecrets("a bypass=1 Passage: ok"), "a bypass=1 Passage: ok");
+  assert.deepEqual(scrubValue({ authHeader: "x1", dbPass: "y2", author: "Ada" }), { authHeader: "[redacted]", dbPass: "[redacted]", author: "Ada" });
+  assert.equal(isSensitiveStep({ op: "assertStorage", key: "authHeader" }), true);
+  assert.equal(isSensitiveStep({ op: "assertValue", label: "Session ID" }), true);
+  assert.equal(isSensitiveStep({ op: "assertValue", label: "Session name" }), false);
+  assert.doesNotMatch(redactSecrets("open http://u:pa?ss1@host/x now"), /pa\?ss1|pa\?/);
+  assert.doesNotMatch(redactSecrets("config:\n  password:\n    s3cr3tval"), /s3cr3tval/);
+  assert.equal(redactSecrets('- region "Cookies":\n  - button "Accept all"'), '- region "Cookies":\n  - button "Accept all"');
+  assert.doesNotMatch(redactSecrets("password=&quot;hunter22&quot; x"), /hunter22/);
+  assert.match(redactSecrets("password=&quot;hunter22&quot; x"), / x$/);
+});
+
+test("cycle 9b: many http:// and //x: starts in one long run stay fast", () => {
+  for (const unit of ["http://", "//x:", "eyJ-", "token:"]) {
+    const started = Date.now();
+    redactSecrets(unit.repeat(Math.ceil(120000 / unit.length)));
+    assert.ok(Date.now() - started < 4000, `${unit} repeated took ${Date.now() - started} ms`);
+  }
 });

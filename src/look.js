@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createContext, runStep } from "./run-spec.js";
 import { startApp } from "./server.js";
-import { clipValue, hideTokenSegments, redactHead, redactSecrets, scrubRecord } from "./spec/evidence.js";
+import { clipValue, hideTokenSegments, redactClip, redactSecrets, scrubRecord } from "./spec/evidence.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
@@ -129,8 +129,8 @@ export async function look({ url, specPath, until, screenshotPath }) {
       timeoutMs: spec?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: spec?.env,
       hooks: {
-        onConsole: (level, text) => { if (consoleRecords.length < MAX_CONSOLE) consoleRecords.push({ level, text: clipValue(redactHead(text), 300) }); },
-        onPageError: message => { if (pageErrors.length < MAX_PAGE_ERRORS) pageErrors.push(clipValue(redactHead(message), 300)); },
+        onConsole: (level, text) => { if (consoleRecords.length < MAX_CONSOLE) consoleRecords.push({ level, text: redactClip(text, 300) }); },
+        onPageError: message => { if (pageErrors.length < MAX_PAGE_ERRORS) pageErrors.push(redactClip(message, 300)); },
         onResponse: response => {
           try {
             const request = response.request();
