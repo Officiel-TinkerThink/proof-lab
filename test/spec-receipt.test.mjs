@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSpec } from "../src/run-spec.js";
-import { verifyChain } from "../src/chain.js";
+import { scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
+import { fixedStamp, verifyChain } from "../src/chain.js";
 import { KEY, TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
 const WAITLIST = fileURLToPath(new URL("../specs/waitlist.json", import.meta.url));
@@ -308,6 +309,22 @@ test("a receipt that cannot be written makes the run ERROR and leaves nothing ha
     assert.equal(await readFile(notADirectory, "utf8"), "a file where the receipts directory should be");
   } finally {
     await rm(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a receipt that scrubReceipt has not seen is refused, so an entry point cannot write one unscrubbed", TIMEOUT, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "proof-unscrubbed-"));
+  try {
+    const receipt = { verdict: "PASS", app: "http://127.0.0.1:1", revision: null, at: fixedStamp(), checks: [], screenshot: null, error: null, next: [] };
+    const options = { shot: null, key: KEY, dir };
+    await assert.rejects(writeScrubbedReceipt(receipt, options, "advice"), /scrubReceipt\(receipt\) must run first/);
+    assert.deepEqual(await readdir(dir), [], "nothing is written for a refused receipt");
+    scrubReceipt(receipt);
+    const paths = await writeScrubbedReceipt(receipt, options, "advice");
+    assert.equal(receipt.error, null, "the scrubbed receipt is written");
+    assert.match(paths.receiptPath, /\.json$/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

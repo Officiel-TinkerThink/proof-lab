@@ -7,15 +7,14 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
-import { fixedStamp, signingKeyFromFile, writeReceipt } from "./chain.js";
+import { fixedStamp, signingKeyFromFile } from "./chain.js";
 import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactClip, redactSecrets, scrubRecord, specLabel, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
 import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
-import { recordWriteFailure, scrubReceipt, scrubStoredPaths } from "./receipt-scrub.js";
-import { scrubReceiptFile } from "./status.js";
+import { scrubReceipt, scrubReceiptFile, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -339,15 +338,13 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const asFiled = list => list.map(record => scrubRecord(record, EVIDENCE_BOOKKEEPING));
   const detail = { checks, steps: asFiled(stepRecords), contexts: asFiled(contextRecords), console: asFiled(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
-  // The steps after the scrub point (see receipt-scrub.js): what a failed write and writeReceipt add is scrubbed as well.
-  try {
-    const paths = await writeReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir });
+  // The write goes through receipt-scrub.js: what a failed write and writeReceipt add to the receipt is scrubbed there too.
+  const paths = await writeScrubbedReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir },
+    "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again.");
+  if (paths) { // detail keeps the real paths for callers
     detail.receiptPath = paths.receiptPath;
     detail.evidencePath = paths.evidencePath;
-  } catch (error) {
-    recordWriteFailure(receipt, error, "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again.");
   }
-  scrubStoredPaths(receipt); // detail keeps the real paths for callers
   Object.defineProperty(receipt, "detail", { value: detail, enumerable: false });
   return receipt;
 }
