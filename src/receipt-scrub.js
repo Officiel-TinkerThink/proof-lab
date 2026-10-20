@@ -36,7 +36,9 @@ export async function writeScrubbedReceipt(receipt, options, advice) {
 const DIR_PLACEHOLDER = "<dir>/";
 
 // A path as a tool prints it (`<dir>/name`) read back as what it names: the directory part is not known, the name is.
-export const fromPrinted = printed => (printed.startsWith(DIR_PLACEHOLDER) ? printed.slice(DIR_PLACEHOLDER.length) : printed);
+// Either separator is accepted after the placeholder, as a path typed on Windows would use it.
+const PLACEHOLDER_HEAD = DIR_PLACEHOLDER.slice(0, -1);
+export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /[\\/]/.test(printed[PLACEHOLDER_HEAD.length] ?? "") ? printed.slice(PLACEHOLDER_HEAD.length + 1) : printed);
 
 // The first line of an error, for a command to print. A system error carries the path it failed on, exactly as the call
 // got it (error.path, error.dest): that path is replaced the way a printed path is, so no directory is printed, and nothing
@@ -44,10 +46,12 @@ export const fromPrinted = printed => (printed.startsWith(DIR_PLACEHOLDER) ? pri
 // through this, never through firstLine alone.
 export function safeLine(error) {
   let line = firstLine(error);
-  for (const key of ["path", "dest"]) {
-    const named = Buffer.isBuffer(error?.[key]) ? error[key].toString() : error?.[key];
+  const named = ["path", "dest"].map(key => (Buffer.isBuffer(error?.[key]) ? error[key].toString() : error?.[key])).filter(value => typeof value === "string" && value !== "");
+  // The longest first: one path can sit inside the other (a rename into a folder holding the same name), and replacing the
+  // shorter first would leave the longer one's extra directory in the line.
+  for (const path of [...new Set(named)].sort((a, b) => b.length - a.length)) {
     // A replacer function, not a replacement string: a name holding `$&` or `$$` must not be expanded.
-    if (typeof named === "string" && named !== "") line = line.replaceAll(named, () => scrubReceiptFile(named));
+    line = line.replaceAll(path, () => scrubReceiptFile(path));
   }
   return redactSecrets(line);
 }

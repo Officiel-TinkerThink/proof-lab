@@ -333,6 +333,12 @@ test("safeLine replaces the path a system error carries and keeps the rest of th
   assert.equal(fromPrinted("<dir>/name.json"), "name.json");
   assert.equal(fromPrinted("name.json"), "name.json");
   assert.equal(fromPrinted("latest"), "latest");
+  assert.equal(fromPrinted("<dir>\\name.json"), "name.json"); // a path typed on Windows
+  assert.equal(fromPrinted("<dir>"), "<dir>");
+  assert.equal(fromPrinted("<dirs>/name.json"), "<dirs>/name.json");
+  // a rename: the path sits inside the dest, and neither directory may stay in the line
+  const renamed = Object.assign(new Error("ENOENT: no such file or directory, rename '/receipts/r.json' -> '/backup/receipts/r.json'"), { path: "/receipts/r.json", dest: "/backup/receipts/r.json" });
+  assert.equal(safeLine(renamed), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
 });
 
 test("every file name writeReceipt writes has the shape the path scrub keeps intact", TIMEOUT, async () => {
