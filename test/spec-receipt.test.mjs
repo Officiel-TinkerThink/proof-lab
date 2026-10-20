@@ -339,6 +339,15 @@ test("safeLine replaces the path a system error carries and keeps the rest of th
   // a rename: the path sits inside the dest, and neither directory may stay in the line
   const renamed = Object.assign(new Error("ENOENT: no such file or directory, rename '/receipts/r.json' -> '/backup/receipts/r.json'"), { path: "/receipts/r.json", dest: "/backup/receipts/r.json" });
   assert.equal(safeLine(renamed), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
+  // one pass: the text a replacement inserted is never rewritten by the other path (here "/r.json" sits inside "<dir>/r.json")
+  const inside = Object.assign(new Error("ENOENT: no such file or directory, rename '/r.json' -> '/backup/r.json'"), { path: "/r.json", dest: "/backup/r.json" });
+  assert.equal(safeLine(inside), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
+  // characters that mean something in a pattern are taken literally
+  for (const odd of ["/x/(a)+[b].json", "/x/a.*?b|c^$.json", "C:\\x\\a\\b{2}.json"]) {
+    const named = Object.assign(new Error(`ENOENT: no such file or directory, open '${odd}' (twice: ${odd})`), { path: odd });
+    const shown = odd.split(/[\\/]/).at(-1);
+    assert.equal(safeLine(named), `ENOENT: no such file or directory, open '<dir>/${shown}' (twice: <dir>/${shown})`);
+  }
 });
 
 test("every file name writeReceipt writes has the shape the path scrub keeps intact", TIMEOUT, async () => {

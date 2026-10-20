@@ -47,11 +47,12 @@ export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /
 export function safeLine(error) {
   let line = firstLine(error);
   const named = ["path", "dest"].map(key => (Buffer.isBuffer(error?.[key]) ? error[key].toString() : error?.[key])).filter(value => typeof value === "string" && value !== "");
-  // The longest first: one path can sit inside the other (a rename into a folder holding the same name), and replacing the
-  // shorter first would leave the longer one's extra directory in the line.
-  for (const path of [...new Set(named)].sort((a, b) => b.length - a.length)) {
-    // A replacer function, not a replacement string: a name holding `$&` or `$$` must not be expanded.
-    line = line.replaceAll(path, () => scrubReceiptFile(path));
+  if (named.length > 0) {
+    // One pass over the line with one pattern, the longest path tried first at each position: one path can sit inside the
+    // other (a rename into a folder holding the same name), and a second pass would also rewrite the text the first one
+    // inserted. A replacer function, not a replacement string: a name holding `$&` or `$$` must not be expanded.
+    const escaped = [...new Set(named)].sort((a, b) => b.length - a.length).map(path => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    line = line.replace(new RegExp(escaped.join("|"), "g"), path => scrubReceiptFile(path));
   }
   return redactSecrets(line);
 }
