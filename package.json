@@ -10,7 +10,7 @@
   "scripts": {
     "serve": "node src/server.js",
     "prove": "node src/prove.js",
-    "test": "node --test test/run.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "playwright": "1.64.0"
