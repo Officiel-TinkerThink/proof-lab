@@ -11,6 +11,8 @@ export const MIN_KEY_BYTES = 32;
 export const GENESIS = "GENESIS";
 // Lock file in the receipts directory. Its name does not end in .json, so receiptFiles never lists it.
 export const LOCK_NAME = ".chain.lock";
+// A stale lock the writer claims before it removes it: the lock's name, `.stale-` and 12 hex characters (see withChainLock).
+export const STALE_CLAIM_NAME = new RegExp(`^${LOCK_NAME.replaceAll(".", "\\.")}\\.stale-[0-9a-f]{12}$`);
 export const LOCK_TIMEOUT_MS = 30000;
 // Evidence file suffix. It does not end in .json, so receiptFiles (which lists *.json) never mistakes evidence for a receipt.
 export const EVIDENCE_SUFFIX = ".evidence.jsonl";

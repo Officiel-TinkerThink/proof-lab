@@ -375,6 +375,15 @@ test("safeLine builds a system error's line from its fields, and names only the 
   }
   assert.equal(safeLine({ get path() { throw new Error("getter"); } }), UNREADABLE_ERROR);
 
+  // a stale lock claim the writer makes is the lab's own name: it is shown, so the operator can tell which lab file failed
+  const stale = systemError("EPERM", "rename", "/x/work/.chain.lock.stale-0123456789ab", "/x/work/.chain.lock");
+  assert.equal(safeLine(stale), "EPERM: operation not permitted, rename '<dir>/.chain.lock.stale-0123456789ab' -> '<dir>/.chain.lock'");
+  // the code and the call are printed only in Node's shapes: anything else is a placeholder, whatever text it holds
+  assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/y.json"), { syscall: "/opt/Client-Acme-Study7/open" })), `${gone}, <call> '<path>'`);
+  assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/y.json"), { code: "token=hunter2" })).includes("hunter2"), false);
+  const badCode = Object.assign(systemError("ENOENT", "open", "/x/y.json"), { code: "token=hunter2" });
+  assert.equal(safeLine(badCode), `<code>: ${getSystemErrorMessage(badCode.errno)}, open '<path>'`);
+
   // everything else is free text: only the pattern scrub applies
   assert.equal(safeLine(new Error("plain message")), "plain message");
   assert.equal(safeLine("a string"), "a string");

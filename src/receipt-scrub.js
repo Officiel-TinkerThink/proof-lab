@@ -2,7 +2,7 @@
 // through scrubReceipt and writeScrubbedReceipt, and writeScrubbedReceipt refuses a receipt that scrubReceipt has not seen,
 // so a new entry point cannot write one unscrubbed by forgetting a step.
 import * as util from "node:util";
-import { LAB_FILE_NAME, LOCK_NAME, writeReceipt } from "./chain.js";
+import { LAB_FILE_NAME, LOCK_NAME, STALE_CLAIM_NAME, writeReceipt } from "./chain.js";
 import { hideQuery, redactSecrets, scrubValue } from "./spec/evidence.js";
 import { firstLine } from "./spec/util.js";
 
@@ -46,7 +46,12 @@ export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /
 // path is a directory cannot be told from the call that failed on it (stat, open and realpath take either), and a list of
 // directory calls would never be complete.
 const lastSegment = path => path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
-const shownPath = path => (LAB_FILE_NAME.test(lastSegment(path)) || lastSegment(path) === LOCK_NAME ? scrubReceiptFile(path) : "<path>");
+const isLabName = name => LAB_FILE_NAME.test(name) || name === LOCK_NAME || STALE_CLAIM_NAME.test(name);
+const shownPath = path => (isLabName(lastSegment(path)) ? scrubReceiptFile(path) : "<path>");
+// The code and the call are printed only in the shapes Node writes them (ENOENT, ERR_FS_EISDIR; open, spawn). Any other text
+// there is shown as a placeholder: an allow-list, not a pattern, so a value from a dependency cannot put a path in the line.
+const CODE_SHAPE = /^[A-Z][A-Z0-9_]*$/;
+const CALL_SHAPE = /^[a-z][a-z0-9_]*$/;
 
 // What safeLine returns when it cannot read the error at all. Exported so a test can tell it from a real line.
 export const UNREADABLE_ERROR = "an error whose text could not be read";
@@ -71,11 +76,13 @@ export function safeLine(error) {
     if (path !== "" && typeof error.code === "string" && typeof error.syscall === "string") {
       // The line is composed of parts that are safe by construction: the code, Node's description, the call and the paths
       // as shownPath gives them. The pattern scrub is applied to the two that come from the error, not to the whole line.
-      const call = redactSecrets(error.syscall.split(" ")[0]); // a spawn error's syscall is `spawn <file>`: the file is in path, shown as a path
+      const word = error.syscall.split(" ")[0]; // a spawn error's syscall is `spawn <file>`: the file is in path, shown as a path
+      const call = CALL_SHAPE.test(word) ? word : "<call>";
+      const code = CODE_SHAPE.test(error.code) ? error.code : "<code>";
       // The description is Node's own table; older Node has no such function, and an unknown number must not stop the report.
       const reason = typeof error.errno === "number" && error.errno < 0 ? util.getSystemErrorMessage?.(error.errno) : undefined;
       const quoted = [path, dest].filter(named => named !== "").map(named => `'${shownPath(named)}'`);
-      return firstLine(`${reason === undefined ? redactSecrets(error.code) : `${redactSecrets(error.code)}: ${reason}`}, ${call} ${quoted.join(" -> ")}${left}`);
+      return firstLine(`${reason === undefined ? code : `${code}: ${reason}`}, ${call} ${quoted.join(" -> ")}${left}`);
     }
     return `${redactSecrets(firstLine(error))}${left}`;
   } catch {
