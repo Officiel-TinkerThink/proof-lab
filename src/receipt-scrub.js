@@ -1,6 +1,7 @@
 // The one place that decides how a receipt is scrubbed and written. `run` (run-spec.js) and `prove` (prove.js) both go
 // through scrubReceipt and writeScrubbedReceipt, and writeScrubbedReceipt refuses a receipt that scrubReceipt has not seen,
 // so a new entry point cannot write one unscrubbed by forgetting a step.
+import { getSystemErrorMessage } from "node:util";
 import { LAB_FILE_NAME, writeReceipt } from "./chain.js";
 import { hideQuery, redactSecrets, scrubValue } from "./spec/evidence.js";
 import { firstLine } from "./spec/util.js";
@@ -40,21 +41,22 @@ const DIR_PLACEHOLDER = "<dir>/";
 const PLACEHOLDER_HEAD = DIR_PLACEHOLDER.slice(0, -1);
 export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /[\\/]/.test(printed[PLACEHOLDER_HEAD.length] ?? "") ? printed.slice(PLACEHOLDER_HEAD.length + 1) : printed);
 
-// The first line of an error, for a command to print. A system error carries the path it failed on, exactly as the call
-// got it (error.path, error.dest): that path is replaced the way a printed path is, so no directory is printed, and nothing
-// is guessed. The rest of the line is free text and goes through the pattern scrub. Any error line a command prints goes
-// through this, never through firstLine alone.
+// The first line of an error, for a command to print. Any error line a command prints goes through this, never through
+// firstLine alone.
+//
+// A system error that names a path (code, syscall, errno, path, dest) is not cleaned up: its line is built from those
+// fields, in the form Node writes it, with each path shown the way a printed path is. Its free-text message is never
+// printed, so nothing has to be found and replaced inside a string (which never ends: overlapping paths, `$&` in a name,
+// characters that mean something in a pattern). Every other error is free text and goes through the pattern scrub.
 export function safeLine(error) {
-  let line = firstLine(error);
-  const named = ["path", "dest"].map(key => (Buffer.isBuffer(error?.[key]) ? error[key].toString() : error?.[key])).filter(value => typeof value === "string" && value !== "");
-  if (named.length > 0) {
-    // One pass over the line with one pattern, the longest path tried first at each position: one path can sit inside the
-    // other (a rename into a folder holding the same name), and a second pass would also rewrite the text the first one
-    // inserted. A replacer function, not a replacement string: a name holding `$&` or `$$` must not be expanded.
-    const escaped = [...new Set(named)].sort((a, b) => b.length - a.length).map(path => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    line = line.replace(new RegExp(escaped.join("|"), "g"), path => scrubReceiptFile(path));
+  const asText = value => (Buffer.isBuffer(value) ? value.toString() : typeof value === "string" ? value : "");
+  const [path, dest] = [asText(error?.path), asText(error?.dest)];
+  if (path !== "" && typeof error.code === "string" && typeof error.syscall === "string") {
+    const reason = typeof error.errno === "number" ? getSystemErrorMessage(error.errno) : undefined;
+    const quoted = [path, dest].filter(shown => shown !== "").map(shown => `'${scrubReceiptFile(shown)}'`);
+    return redactSecrets(firstLine(`${reason === undefined ? error.code : `${error.code}: ${reason}`}, ${error.syscall} ${quoted.join(" -> ")}`)); // a name with a line break stays one line
   }
-  return redactSecrets(line);
+  return redactSecrets(firstLine(error));
 }
 
 // How a printed path is shown: the directory is never printed, whatever it holds. The operator chose it, so the operator

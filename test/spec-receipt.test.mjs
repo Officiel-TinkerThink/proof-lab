@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import http from "node:http";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getSystemErrorMap, getSystemErrorMessage } from "node:util";
 import { runSpec } from "../src/run-spec.js";
 import { fromPrinted, safeLine, scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
 import { LAB_FILE_NAME, fixedStamp, verifyChain } from "../src/chain.js";
@@ -312,42 +313,52 @@ test("a receipt that cannot be written makes the run ERROR and leaves nothing ha
   }
 });
 
-test("safeLine replaces the path a system error carries and keeps the rest of the line", async () => {
+// A system error shaped like the ones Node raises: code, errno, syscall, path (and dest). The line is built from these.
+function systemError(code, syscall, path, dest) {
+  const errno = [...getSystemErrorMap()].find(([, [name]]) => name === code)[0]; // libuv numbers differ by platform
+  const named = dest === undefined ? `'${path}'` : `'${path}' -> '${dest}'`;
+  return Object.assign(new Error(`${code}: ${getSystemErrorMessage(errno)}, ${syscall} ${named}`), { code, errno, syscall, path, ...(dest === undefined ? {} : { dest }) });
+}
+
+test("safeLine builds a system error's line from its fields, so no directory is printed", async () => {
+  // real errors from the file system: the line equals Node's own message with each path shown as a printed path
   const missing = join(tmpdir(), "no-such-Ab1Cd2Ef3", "x.json");
-  const error = await readFile(missing).catch(caught => caught);
-  const line = safeLine(error);
-  assert.match(line, /^ENOENT: no such file or directory, open '<dir>\/x\.json'$/);
-  assert.equal(line.includes("no-such"), false);
+  const opened = await readFile(missing).catch(caught => caught);
+  assert.equal(safeLine(opened), "ENOENT: no such file or directory, open '<dir>/x.json'");
+  assert.equal(safeLine(opened), opened.message.split(opened.path).join("<dir>/x.json"));
+  const moved = await rename(join(tmpdir(), "no-such-A1", "r.json"), join(tmpdir(), "no-such-B2", "r.json")).catch(caught => caught);
+  assert.equal(safeLine(moved), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
+  assert.equal(safeLine(await mkdir(join(tmpdir(), "no-such-C3", "d", "e")).catch(caught => caught)), "ENOENT: no such file or directory, mkdir '<dir>/e'");
+  for (const line of [safeLine(opened), safeLine(moved)]) assert.equal(/no-such|[\/]tmp|Temp/i.test(line), false, line);
+
+  // names that mean something to a string replace, a pattern or a line: nothing is searched, so none of them matters
+  for (const odd of ["a$&b.json", "a$$b.json", "a$'b.json", "(a)+[b].json", "a.*?b|c^$.json", "a{2}.json"]) {
+    assert.equal(safeLine(systemError("ENOENT", "open", `/x/work/${odd}`)), `ENOENT: no such file or directory, open '<dir>/${odd}'`);
+  }
+  assert.equal(safeLine(systemError("ENOENT", "open", "C:\\x\\work\\y.json")), "ENOENT: no such file or directory, open '<dir>/y.json'");
+  assert.equal(safeLine(systemError("ENOENT", "rename", "/r.json", "/backup/r.json")), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
+  assert.equal(safeLine(systemError("ENOENT", "rename", "/a/b/c", "/b/c/d/e")), "ENOENT: no such file or directory, rename '<dir>/c' -> '<dir>/e'");
+  assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/work/y.json"), { path: Buffer.from("/x/work/y.json") })), "ENOENT: no such file or directory, open '<dir>/y.json'");
+  assert.equal(safeLine(systemError("ENOENT", "open", "/x/work/a\nb.json")).includes("\n"), false, "one line, whatever the name holds");
+
+  // everything else is free text: only the pattern scrub applies
   assert.equal(safeLine(new Error("plain message")), "plain message");
   assert.equal(safeLine("a string"), "a string");
+  assert.equal(safeLine(null), "null");
   assert.equal(safeLine(new Error("token=hunter2 failed")).includes("hunter2"), false);
-  // a file name with `$&` or `$$` must not be expanded (the directory would reappear): the path is replaced as given
-  for (const odd of ["/x/work/a$&b.json", "/x/work/a$$b.json", "/x/work/a$'b.json"]) {
-    const named = Object.assign(new Error(`ENOENT: no such file or directory, open '${odd}'`), { path: odd });
-    assert.equal(safeLine(named), `ENOENT: no such file or directory, open '<dir>/${odd.split("/").at(-1)}'`);
-  }
-  // a path held as a Buffer is replaced too
-  const buffered = Object.assign(new Error("ENOENT: no such file or directory, open '/x/work/y.json'"), { path: Buffer.from("/x/work/y.json") });
-  assert.equal(safeLine(buffered), "ENOENT: no such file or directory, open '<dir>/y.json'");
-  // a printed path read back
+  assert.equal(safeLine(new Error("first\nsecond")), "first");
+  assert.equal(safeLine(Object.assign(new Error("fetch failed"), { cause: new Error("x") })), "fetch failed");
+  // a name that looks like a secret is scrubbed as a name
+  assert.equal(safeLine(systemError("EACCES", "open", "/x/work/token=hunter2")).includes("hunter2"), false);
+});
+
+test("fromPrinted reads back a path as the tools print it", () => {
   assert.equal(fromPrinted("<dir>/name.json"), "name.json");
   assert.equal(fromPrinted("name.json"), "name.json");
   assert.equal(fromPrinted("latest"), "latest");
   assert.equal(fromPrinted("<dir>\\name.json"), "name.json"); // a path typed on Windows
   assert.equal(fromPrinted("<dir>"), "<dir>");
   assert.equal(fromPrinted("<dirs>/name.json"), "<dirs>/name.json");
-  // a rename: the path sits inside the dest, and neither directory may stay in the line
-  const renamed = Object.assign(new Error("ENOENT: no such file or directory, rename '/receipts/r.json' -> '/backup/receipts/r.json'"), { path: "/receipts/r.json", dest: "/backup/receipts/r.json" });
-  assert.equal(safeLine(renamed), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
-  // one pass: the text a replacement inserted is never rewritten by the other path (here "/r.json" sits inside "<dir>/r.json")
-  const inside = Object.assign(new Error("ENOENT: no such file or directory, rename '/r.json' -> '/backup/r.json'"), { path: "/r.json", dest: "/backup/r.json" });
-  assert.equal(safeLine(inside), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
-  // characters that mean something in a pattern are taken literally
-  for (const odd of ["/x/(a)+[b].json", "/x/a.*?b|c^$.json", "C:\\x\\a\\b{2}.json"]) {
-    const named = Object.assign(new Error(`ENOENT: no such file or directory, open '${odd}' (twice: ${odd})`), { path: odd });
-    const shown = odd.split(/[\\/]/).at(-1);
-    assert.equal(safeLine(named), `ENOENT: no such file or directory, open '<dir>/${shown}' (twice: <dir>/${shown})`);
-  }
 });
 
 test("every file name writeReceipt writes has the shape the path scrub keeps intact", TIMEOUT, async () => {
