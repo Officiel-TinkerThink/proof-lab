@@ -141,16 +141,26 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   return answer("PASS", { ...common, advice });
 }
 
+// The name chain.js writes for a receipt: `${fileStamp(at)}-${revision or "unknown"}.json`. Only this shape is kept intact.
+const LAB_RECEIPT_NAME = /^[0-9T-]+Z-(?:[0-9a-f]{12}|unknown)\.json$/;
+
 // Scrubbed here, so every caller (status, doctor) prints safe text whichever field later holds app-supplied text.
 export function scrubStatus(raw) {
-  // The receipt file name is built by the lab (a time stamp and a revision, no caller text), so it is kept intact; the
-  // directory above it is scrubbed like any other printed text, because the caller chose it.
   const scrubbed = scrubValue(raw);
   if (typeof raw.receiptFile !== "string") return scrubbed;
-  // The separator is kept outside the scrub: a value run in the directory would otherwise swallow it.
-  const cut = Math.max(raw.receiptFile.lastIndexOf("/"), raw.receiptFile.lastIndexOf("\\"));
-  if (cut < 0) return { ...scrubbed, receiptFile: raw.receiptFile };
-  return { ...scrubbed, receiptFile: `${redactSecrets(raw.receiptFile.slice(0, cut))}${raw.receiptFile.slice(cut)}` };
+  return { ...scrubbed, receiptFile: scrubReceiptFile(raw.receiptFile) };
+}
+
+// The directory is scrubbed like any other printed text, because the caller chose it. The name is kept only when it has
+// the lab's own shape; a renamed file is scrubbed too. The separator is kept outside both scrubs, so a value run in the
+// directory cannot swallow it.
+function scrubReceiptFile(path) {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const dir = cut < 0 ? "" : path.slice(0, cut);
+  const sep = cut < 0 ? "" : path.slice(cut, cut + 1);
+  const name = path.slice(cut + 1);
+  const shownName = LAB_RECEIPT_NAME.test(name) ? name : redactSecrets(name);
+  return `${dir === "" ? "" : redactSecrets(dir)}${sep}${shownName}`;
 }
 
 export function formatStatus(raw) {

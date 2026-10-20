@@ -26,6 +26,7 @@ Planned fix: record structural data by default (names, pass or fail, counts, len
 | S2.11 | An HTML-entity quoted value stops at an escaped closer (`\&quot;`). | low |
 | S2.12 | A password that begins with digits and continues with one of `;`, `<`, `>` or a closing bracket right after the digits (`//u:1234;x@h`) is read as a port and kept; the delimiter set is spelled out in SPECS.md. | low |
 | S2.13 | A quoted sentence that contains an address takes the text up to its closing quote into the hidden query (for example `"What? see https://a.b/c?x=1 and more" ok` hides `see … and more`). Follows the spec's blank-inside-query rule; errs toward hiding. | low |
+| S2.14 | `scrubStatus` scrubs the receipt directory with the same rules as free text. A directory name of 40+ base64-like characters with a digit, a letter in each case (for example `/home/runner2/work/ProofLab/ProofLab/receipts`, or a hyphenated Windows folder name) prints as `[redacted long value]`. The receipt file name stays intact, so the receipt is still found by name. Errs toward hiding; the printed path is wrong, no data is lost. Cycle-16 defect review F1. | low |
 
 ## S3. Other deferred items
 

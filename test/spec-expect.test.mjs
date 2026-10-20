@@ -832,6 +832,13 @@ test("scrubStatus: the receipt path is kept, other fields are scrubbed", async (
   assert.equal(hidden.receiptFile.endsWith(`/${name}`), true);
 });
 
+test("scrubStatus: a renamed receipt file is scrubbed; only the lab's own name shape is kept", async () => {
+  const { scrubStatus } = await import("../src/status.js");
+  const renamed = scrubStatus({ receiptFile: "D:/receipts/token=hunter2.json" });
+  assert.equal(renamed.receiptFile.includes("hunter2"), false);
+  assert.equal(renamed.receiptFile.startsWith("D:/receipts/"), true);
+});
+
 test("redactSecrets: a quote inside a quoted address query stays in the query when a letter follows it", () => {
   assert.equal(redactSecrets(`"https://h/x?a=1 b"c d"`), `"https://h/x?[query hidden]"`);
   assert.equal(redactSecrets(`Could not load "https://h/x?q=1". Retrying in 5 s`), `Could not load "https://h/x?[query hidden]". Retrying in 5 s`);
