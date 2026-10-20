@@ -348,9 +348,13 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     detail.evidencePath = paths.evidencePath;
   } catch (error) {
     receipt.verdict = "ERROR";
-    receipt.error = `receipt write failed: ${firstLine(error)}`;
+    // The system's error text names the path it failed on, and it arrives after the choke point above: scrub it here.
+    receipt.error = scrubValue(`receipt write failed: ${firstLine(error)}`);
     receipt.next = [receipt.error, "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again."];
   }
+  // writeReceipt stored the picture's path after the choke point as well. Scrub it too, so the receipt a caller gets in
+  // process, and every printout of it, is scrubbed like the files (detail keeps the real paths for callers).
+  if (typeof receipt.screenshot === "string") receipt.screenshot = scrubReceiptFile(receipt.screenshot);
   Object.defineProperty(receipt, "detail", { value: detail, enumerable: false });
   return receipt;
 }
@@ -373,7 +377,7 @@ export async function main(args) {
   const key = await signingKeyFromFile(values["key-file"]);
   const receipt = await runSpec({ specPath: values.spec, key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS });
   if (values.json) {
-    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, screenshot: typeof receipt.screenshot === "string" ? scrubReceiptFile(receipt.screenshot) : receipt.screenshot, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null }, null, 2));
+    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null }, null, 2));
   } else {
     const totals = receipt.totals;
     console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());

@@ -310,3 +310,20 @@ test("a receipt that cannot be written makes the run ERROR and leaves nothing ha
     await rm(workdir, { recursive: true, force: true });
   }
 });
+
+test("the text a failed receipt write adds to the receipt is scrubbed like the rest of it", TIMEOUT, async () => {
+  const workdir = await mkdtemp(join(tmpdir(), "proof-badreceipts-"));
+  try {
+    // The system's error names the path it failed on; here that path holds a credential-looking segment.
+    const notADirectory = join(workdir, "password=hunter2");
+    await writeFile(notADirectory, "a file where the receipts directory should be");
+    const specPath = join(workdir, "spec.json");
+    await writeFile(specPath, JSON.stringify(page("/fixtures/forms.html", [{ op: "assertState", check: "loaded", label: "Name", state: "enabled" }])));
+    const receipt = await runSpec({ specPath, key: KEY, receiptsDir: notADirectory });
+    assert.equal(receipt.verdict, "ERROR");
+    assert.match(receipt.error, /^receipt write failed:/);
+    assert.equal(JSON.stringify(receipt).includes("hunter2"), false, "the failed-write text must not carry the raw path");
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+});
