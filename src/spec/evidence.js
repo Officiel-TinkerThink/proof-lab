@@ -103,7 +103,7 @@ const SECRET_PATTERNS = [
   // blank, a quote or a bracket, and from its first "?" or "#" to the next blank (a quote there is part of the query), so
   // an address of any length costs one pass; a marker already there is part of the token, which keeps the rule idempotent
   // and still hides what follows the marker.
-  [/(?<=")(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^"\r\n]|"(?![\s,}\]):;)]|$))*)?|(?<=')(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^'\r\n]|'(?![\s,}\]):;)]|$))*)?|(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
+  [/(?<=")(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^\s"]|"(?=\w))*(?:[^\S\r\n]+[^"\r\n]*?(?="(?!\w)))?)?|(?<=')(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|[^\s']|'(?=\w))*(?:[^\S\r\n]+[^'\r\n]*?(?='(?!\w)))?)?|(?:\[(?:query|hash) hidden\]|[^\s"'<>?#])+(?:[?#](?:\[(?:query|hash) hidden\]|\S)*)?|[?#](?:\[(?:query|hash) hidden\]|\S)*/g, hideUrlParts],
   [/(?<![A-Fa-f0-9])[A-Fa-f0-9]{32,}(?![A-Fa-f0-9])/g, "[redacted hex]"],
   // A run of 40 or more token characters that contains a digit. Long hyphenated words and names ("closed-shadow-root-...")
   // have none and are kept. Starting only where a run begins keeps the scan linear.

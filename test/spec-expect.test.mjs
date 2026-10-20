@@ -811,3 +811,19 @@ test("redactSecrets: ports in escaped and JSON text are kept, a quote inside a q
   assert.equal(redactSecrets(redactSecrets(long)), redactSecrets(long));
   assert.equal(redactSecrets(long), "//u:[redacted]@host");
 });
+
+test("redactSecrets: text after a quoted address is kept; an unclosed quote hides only the query", () => {
+  assert.equal(redactSecrets('Could not load "https://h/x?q=1". Retrying in 5 s'), 'Could not load "https://h/x?[query hidden]". Retrying in 5 s');
+  assert.equal(redactSecrets('<img src="https://h/x.png?v=1">logo</p>'), '<img src="https://h/x.png?[query hidden]">logo</p>');
+  assert.equal(redactSecrets("Navigation to 'https://h/x?a=1 failed: timeout"), "Navigation to 'https://h/x?[query hidden] failed: timeout");
+  assert.equal(redactSecrets('{"url":"https://h/x?q=hello world","n":1}'), '{"url":"https://h/x?[query hidden]","n":1}');
+  assert.equal(redactSecrets('"https://h/x?a="b"'), '"https://h/x?[query hidden]"');
+});
+
+test("scrubStatus: the receipt path is kept, other fields are scrubbed", async () => {
+  const { scrubStatus } = await import("../src/status.js");
+  const file = "D:/receipts/2026-10-19T10-00-00-000000000Z-0123456789ab.json";
+  const shown = scrubStatus({ receiptFile: file, advice: ["password=hunter2 next"] });
+  assert.equal(shown.receiptFile, file);
+  assert.equal(shown.advice[0].includes("hunter2"), false);
+});

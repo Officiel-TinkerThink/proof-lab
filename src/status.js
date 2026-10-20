@@ -142,8 +142,13 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
 }
 
 // Scrubbed here, so every caller (status, doctor) prints safe text whichever field later holds app-supplied text.
+export function scrubStatus(raw) {
+  // The receipt path is built by the lab (dir plus a time-and-revision file name): scrubbing it turns the name into garbage.
+  return { ...scrubValue(raw), ...(raw.receiptFile === undefined ? {} : { receiptFile: raw.receiptFile }) };
+}
+
 export function formatStatus(raw) {
-  const result = scrubValue(raw);
+  const result = scrubStatus(raw);
   const lines = [`${result.state}${result.spec ? ` ${result.spec}` : ""}`];
   if (result.receiptFile) lines.push(`  receipt: ${result.receiptFile}`);
   if (result.revision !== undefined && result.revision !== null) lines.push(`  receipt revision: ${result.revision}${result.currentRevision ? `   current: ${result.currentRevision}` : ""}`);
@@ -186,7 +191,7 @@ export async function main(args, { defaultReceipts }) {
     maxAgeSeconds: number("max-age", undefined),
   });
   // Everything printed is scrubbed once more here, whichever field a later change puts text in.
-  const shown = scrubValue(result);
+  const shown = scrubStatus(result);
   console.log(values.json ? JSON.stringify(shown, null, 2) : formatStatus(shown));
   return result.exitCode;
 }
