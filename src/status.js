@@ -142,8 +142,9 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
 }
 
 // The name chain.js writes for a receipt: `${fileStamp(fixedStamp(at))}-${revision or "unknown"}.json`, where fixedStamp
-// gives nine fractional digits. Only this exact shape is kept intact.
-const LAB_RECEIPT_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{9}Z-(?:[0-9a-f]{12}|unknown)\.json$/;
+// gives nine fractional digits. Only this exact shape is kept intact, with the receipt's own suffix or the suffix of the
+// picture or evidence file written next to it (chain.js writes all three under the same stem).
+const LAB_RECEIPT_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{9}Z-(?:[0-9a-f]{12}|unknown)(?:\.json|\.png|\.evidence\.jsonl)$/;
 
 // Scrubbed here, so every caller (status, doctor) prints safe text whichever field later holds app-supplied text.
 export function scrubStatus(raw) {

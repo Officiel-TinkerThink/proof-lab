@@ -846,6 +846,13 @@ test("scrubStatus: a renamed receipt file is scrubbed; only the lab's own name s
   // a bare drive letter with a lab name keeps the name intact
   const bare = scrubStatus({ receiptFile: "D:2026-10-19T10-00-00-000000000Z-0123456789ab.json" });
   assert.equal(bare.receiptFile, "D:2026-10-19T10-00-00-000000000Z-0123456789ab.json");
+  // the picture and evidence files the lab writes under the same stem keep their names too; a foreign suffix does not
+  for (const suffix of [".png", ".evidence.jsonl"]) {
+    const sibling = scrubStatus({ receiptFile: `D:/receipts/2026-10-19T10-00-00-000000000Z-0123456789ab${suffix}` });
+    assert.equal(sibling.receiptFile, `D:/receipts/2026-10-19T10-00-00-000000000Z-0123456789ab${suffix}`);
+  }
+  const foreign = scrubStatus({ receiptFile: "D:/receipts/token=hunter2/2026-10-19T10-00-00-000000000Z-0123456789ab.pdf" });
+  assert.equal(foreign.receiptFile.includes("hunter2"), false);
 });
 
 test("redactSecrets: a quote inside a quoted address query stays in the query when a letter follows it", () => {

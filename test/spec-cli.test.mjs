@@ -140,7 +140,7 @@ test("the CLI scrubs the receipt path in both the text and the --json output", T
     assert.match(parsed.receiptFile, /\.json$/);
     assert.equal(parsed.receiptFile.includes("hunter2"), false, parsed.receiptFile);
     // Every path the --json output carries is scrubbed, not only receiptFile (writeReceipt also stores the screenshot path).
-    assert.equal(typeof parsed.screenshot, "string", "the run stores a screenshot path");
+    assert.match(parsed.screenshot ?? "", /[\\/]\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.png$/, "the screenshot path is scrubbed but keeps the file name");
     // evidenceFile is left out: whether the evidence path is scrubbed too is an open owner decision.
     const { evidenceFile: _evidence, ...rest } = parsed;
     assert.equal(JSON.stringify(rest).includes("hunter2"), false, "no raw receipts directory in the --json output");
