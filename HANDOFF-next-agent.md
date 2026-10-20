@@ -1,0 +1,51 @@
+# Handoff: fix the open redaction items (proof-lab)
+
+Date: 2026-10-20. Repo: `D:/core/projects/proof-lab`. Branch: `feat/regression-tests`. No git remote configured: nothing is pushed, nothing is merged. Do not push or merge unless the owner asks.
+
+Read first: `HANDOFF.md` (state and history), `SPECS.md` lines 176-181 (the redaction contract), `SECURITY-BACKLOG.md` (scope contract: S1, S2.x, S3.x are deferred and must not be re-reported).
+
+## State
+
+- Head: `c501fc3` (handoff note). Code head: `d8bd36c`.
+- **Last reviewed head: `1954c8f`.** `d8bd36c` has NO review. The five-cycle review cap was reached, so the run is "not done" until `d8bd36c` (and whatever you change) is reviewed.
+- Gates on `d8bd36c`: `node --test test/*.test.mjs` gives 234 tests, 233 pass, 1 skipped (Windows symlink test), 0 fail. Run it in the background: it takes more than 120 s.
+- Demo: `node demo/run-demo.mjs` must show: PASS 0; FAIL 1 (two bugs); NEEDS-REVIEW exit 3; expectations PASS 0; ERROR 2 (invalid spec); ERROR 2 (no checks); chain VALID exit 0; tamper INVALID exit 1. Verified on `d8bd36c`.
+
+## What `d8bd36c` changed (the code under review)
+
+`src/status.js`, `scrubReceiptFile` and `LAB_RECEIPT_NAME`:
+- `LAB_RECEIPT_NAME` is now `^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{9}Z-(?:[0-9a-f]{12}|unknown)\.json$`. It matches `fixedStamp` + `fileStamp` in `src/chain.js:53-59` and the name built at `src/chain.js:316-318`.
+- A name that does not match is scrubbed with the WHOLE path (`redactSecrets(path)`), so a run joined by `/` is judged as one (spec line 179).
+- A lab-shaped name keeps its name intact; only the directory above it is scrubbed, with the separator kept outside the scrub.
+- A bare drive letter (`D:2026-...json`) is handled: the name starts after the colon.
+- Tests: `test/spec-expect.test.mjs`, the test named "scrubStatus: a renamed receipt file is scrubbed; only the lab's own name shape is kept".
+
+## Open items, in order
+
+1. **Review `d8bd36c`.** Freeze the diff to a scratch file first (`git diff 1954c8f..d8bd36c`), then run defect and spec reviewers on it (size gate: small change, these two only). Scope contract is in `SECURITY-BACKLOG.md`. Owner must decide whether a fresh review run has its own five-cycle cap before you start it.
+
+2. **`run --json` and `run` text print the receipt path raw.** Verified: `src/run-spec.js:375` (`receiptFile: receipt.detail?.receiptPath`) and `src/run-spec.js:386` (`console.log(\`  receipt:  ${receipt.detail.receiptPath}\`)`). Only `status` goes through `scrubStatus`. Decide and fix: route the receipt path through the same scrub (`scrubStatus` or the same function), or record why the path is safe. The path is built in `src/chain.js:350-353` from the receipts directory the caller chose. Check `SECURITY-BACKLOG.md` for an existing entry before you call it new. Add a test.
+
+3. **Owner decision (do not decide alone):** the lab-name exemption. Spec line 181 says the status command "scrubs everything it prints". A lab-shaped name is kept intact, which is a documented deviation. Options:
+   - (a) Keep the exemption. Cost: the spec's literal wording is not met for lab-written names; record it as an accepted deviation with the reason.
+   - (b) Scrub the name too. Cost: a normal receipt name such as `2026-10-19T10-00-00-000000000Z-0123456789ab.json` matches the long-value rule and prints as `[redacted long value].json`, so the receipt cannot be found by its printed name.
+   - Recommendation: (a), with the deviation written into the spec and the backlog. Ask the owner in one line before changing it.
+
+4. **Directory over-hiding (S2.14).** A plain receipts directory with a long, mixed-case, digit-bearing name prints as `[redacted long value]`. Errs toward hiding; the file name stays intact. Recorded in `SECURITY-BACKLOG.md`. No change needed unless the owner asks.
+
+## Rules that stay in force
+
+- Signing key only via `--key-file`; never the `PROOF_LAB_KEY` environment variable.
+- Cookie values stay masked (length plus keyed HMAC fingerprint).
+- Never delete or move a file during a gate or a review, including logs. Each run writes a new log name.
+- Security findings are deferred to documents (`SECURITY-BACKLOG.md`), not dropped.
+- Review rules (agent-kit `review-fix-cycle` skill, now on `main`): freeze the diff before review; delta review only; "done" needs a review of the latest fix; a run that reaches the cap is "not done" and the user is notified.
+
+## Quarantined files (restore only if the owner asks)
+
+- `20261019T165040789-0793` (`gate-b-0022.log`) and `20261019T165245046-d756` (`gate-b-0023.log`), removed by a runner earlier. Restore with `safe-rm-restore`.
+
+## Out of scope for this handoff
+
+- `D:/core/projects/agent-kit` is a separate repo. Its review skill change is merged to `main` (PR #21, merge commit `4071a3b`).
+- Untracked `denyB.out` in agent-kit is not ours; leave it.
