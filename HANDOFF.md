@@ -7,7 +7,7 @@ Date: 2026-10-20. Branch: `feat/regression-tests`. Remote: none configured, noth
 - Last commit: `164570c` (cycle-14 fixes and this file). Gates for it are green: `gate-{a,b,c}-0024`.
 - **Uncommitted, in progress (cycle 15 fixes):**
   - `src/spec/evidence.js`: the quoted-address rule. A quote inside the query stays in it when a letter, digit or `_` follows it. The blank group after the query also takes such quotes, so `"https://h/x?a=1 b"c d"` hides the whole address.
-  - `src/status.js`: `scrubStatus` keeps the receipt file name intact and scrubs the directory above it. The separator is kept outside the scrub.
+  - `src/status.js`: `scrubStatus` keeps the receipt file name intact and scrubs the directory above it. The separator is kept outside the scrub. (Superseded on 2026-10-20: the directory is no longer scrubbed but never printed; a path shows as `<dir>/` and the name. See `HANDOFF-next-agent.md`.)
   - `test/spec-expect.test.mjs`: tests for the quote rule and for the receipt path.
   - `spec-expect` suite: 72 of 72 pass on these edits.
   - Gates A, B and C have NOT been rerun on these edits. Run them before committing.

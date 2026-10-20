@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSpec } from "../src/run-spec.js";
-import { scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
+import { safeLine, scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
 import { LAB_FILE_NAME, fixedStamp, verifyChain } from "../src/chain.js";
 import { KEY, TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
@@ -310,6 +310,17 @@ test("a receipt that cannot be written makes the run ERROR and leaves nothing ha
   } finally {
     await rm(workdir, { recursive: true, force: true });
   }
+});
+
+test("safeLine replaces the path a system error carries and keeps the rest of the line", async () => {
+  const missing = join(tmpdir(), "no-such-Ab1Cd2Ef3", "x.json");
+  const error = await readFile(missing).catch(caught => caught);
+  const line = safeLine(error);
+  assert.match(line, /^ENOENT: no such file or directory, open '<dir>\/x\.json'$/);
+  assert.equal(line.includes("no-such"), false);
+  assert.equal(safeLine(new Error("plain message")), "plain message");
+  assert.equal(safeLine("a string"), "a string");
+  assert.equal(safeLine(new Error("token=hunter2 failed")).includes("hunter2"), false);
 });
 
 test("every file name writeReceipt writes has the shape the path scrub keeps intact", TIMEOUT, async () => {

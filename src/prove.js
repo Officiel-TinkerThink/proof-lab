@@ -6,9 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { runCli } from "./cli.js";
-import { scrubReceipt, writeScrubbedReceipt } from "./receipt-scrub.js";
-import { safeLine } from "./spec/evidence.js";
-import { firstLine, isMainModule } from "./spec/util.js";
+import { safeLine, scrubReceipt, writeScrubbedReceipt } from "./receipt-scrub.js";
+import { isMainModule } from "./spec/util.js";
 import { startApp } from "./server.js";
 import {
   GENESIS,
@@ -121,7 +120,7 @@ export async function prove({ url, bug, receiptsDir = DEFAULT_RECEIPTS, key = si
     shot = await page.screenshot({ fullPage: true });
   } catch (error) {
     receipt.verdict = "ERROR";
-    receipt.error = `prove failed: ${firstLine(error)}`;
+    receipt.error = `prove failed: ${safeLine(error)}`;
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (server) await server.close().catch(() => {});

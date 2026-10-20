@@ -27,7 +27,7 @@ export async function writeScrubbedReceipt(receipt, options, advice) {
     return await writeReceipt(receipt, options);
   } catch (error) {
     receipt.verdict = "ERROR";
-    receipt.error = scrubValue(`receipt write failed: ${firstLine(error)}`);
+    receipt.error = scrubValue(`receipt write failed: ${safeLine(error)}`);
     receipt.next = [receipt.error, advice];
     return null;
   }
@@ -37,6 +37,19 @@ export async function writeScrubbedReceipt(receipt, options, advice) {
 // already knows it, and guessing whether a folder name looks like a secret has no end (it hides harmless names and misses
 // others). What is left is the file name: the lab's own shape is kept intact, any other name is scrubbed like free text.
 export const DIR_PLACEHOLDER = "<dir>/";
+
+// The first line of an error, for a command to print. A system error carries the path it failed on, exactly as the call
+// got it (error.path, error.dest): that path is replaced the way a printed path is, so no directory is printed, and nothing
+// is guessed. The rest of the line is free text and goes through the pattern scrub. Any error line a command prints goes
+// through this, never through firstLine alone.
+export function safeLine(error) {
+  let line = firstLine(error);
+  for (const key of ["path", "dest"]) {
+    const named = error?.[key];
+    if (typeof named === "string" && named !== "") line = line.replaceAll(named, scrubReceiptFile(named));
+  }
+  return redactSecrets(line);
+}
 export function scrubReceiptFile(path) {
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   // A bare drive letter ("D:name.json") ends the directory part at the colon.

@@ -44,7 +44,7 @@ export function signingKey(env = process.env) {
 export async function signingKeyFromFile(path) {
   const info = await stat(path);
   if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
-    throw new Error(`key file ${path} is readable by group or others (mode ${(info.mode & 0o777).toString(8)}); set it to 0600`);
+    throw new Error(`the key file is readable by group or others (mode ${(info.mode & 0o777).toString(8)}); set it to 0600`);
   }
   const key = (await readFile(path, "utf8")).replace(/[\r\n]+$/, "");
   if (Buffer.byteLength(key, "utf8") < MIN_KEY_BYTES) {
@@ -202,7 +202,7 @@ export async function latestHash(dir) {
 const queues = new Map(); // lock path -> promise that settles when the last queued writer of this process is done
 
 function lockedError(dir) {
-  return new Error(`receipts in ${dir} are locked by another writer; if no writer is running, remove ${LOCK_NAME}`);
+  return new Error(`the receipts directory is locked by another writer; if no writer is running, remove ${LOCK_NAME}`);
 }
 
 async function queueInProcess(lockPath, dir, timeoutMs, task) {
@@ -446,7 +446,7 @@ async function evidenceIssue(dir, receipt) {
 // the evidence files that are gone. A read error on a receipt throws: nothing can be said.
 export async function verifyChain(dir, key) {
   const files = await receiptFiles(dir);
-  if (files.length === 0) throw new Error(`no receipts in ${dir}`);
+  if (files.length === 0) throw new Error("no receipts in the receipts directory");
   const problems = [];
   const missingEvidence = [];
   const keyId = keyIdOf(key);

@@ -10,8 +10,9 @@ import { chromium } from "playwright";
 import { LOCK_NAME, environmentWithoutKey, keyIdOf, receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { startApp } from "./server.js";
 import { validateSpec } from "./spec/schema.js";
-import { firstLine, isMainModule, parseCli } from "./spec/util.js";
+import { isMainModule, parseCli } from "./spec/util.js";
 import { runCli } from "./cli.js";
+import { safeLine } from "./receipt-scrub.js";
 import { scrubValue } from "./spec/evidence.js";
 import { formatStatus, scrubStatus, statusOf } from "./status.js";
 
@@ -25,7 +26,7 @@ async function attempt(name, work) {
   try {
     return await work();
   } catch (error) {
-    return bad(name, firstLine(error));
+    return bad(name, safeLine(error));
   }
 }
 
@@ -95,15 +96,14 @@ async function checkBrowser() {
   });
 }
 
-async function checkSpec(specPath) {
-  // The directory the operator chose is not printed: the file name says which spec this is.
-  const label = basename(specPath);
+// label names the spec in every line: its file name, because the directory the operator chose is not printed.
+async function checkSpec(specPath, label) {
   const name = `spec ${label}`;
   let spec;
   try {
     spec = JSON.parse(await readFile(specPath, "utf8"));
   } catch (error) {
-    return [bad(name, `cannot be read: ${firstLine(error)}`)];
+    return [bad(name, `cannot be read: ${safeLine(error)}`)];
   }
   const problems = validateSpec(spec);
   if (problems.length > 0) return [bad(name, `invalid: ${problems.join("; ")}`)];
@@ -147,7 +147,10 @@ export async function runDoctor({ dir, keyFile, specPaths = [] }) {
   checks.push(await checkChain(dir, key));
   checks.push(await checkLock(dir));
   checks.push(await checkBrowser());
-  for (const specPath of specPaths) checks.push(...await checkSpec(specPath));
+  // Two specs with the same file name in different folders are told apart by their position, never by their folder.
+  const names = specPaths.map(specPath => basename(specPath));
+  const labels = names.map((label, index) => (names.indexOf(label) === names.lastIndexOf(label) ? label : `#${index + 1} ${label}`));
+  for (const [index, specPath] of specPaths.entries()) checks.push(...await checkSpec(specPath, labels[index]));
 
   // Information only: where each spec stands. A stale or failing receipt is history, not a broken setup.
   const statuses = [];

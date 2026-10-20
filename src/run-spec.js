@@ -15,7 +15,7 @@ import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
 import { runCli } from "./cli.js";
-import { scrubReceipt, scrubReceiptFile, writeScrubbedReceipt } from "./receipt-scrub.js";
+import { safeLine, scrubReceipt, scrubReceiptFile, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -277,7 +277,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     completed = true;
   } catch (error) {
     receipt.verdict = "ERROR";
-    receipt.error = `run failed: ${firstLine(error)}`;
+    receipt.error = `run failed: ${safeLine(error)}`;
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (server) await server.close().catch(() => {});

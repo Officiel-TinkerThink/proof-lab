@@ -16,14 +16,15 @@ const SECTIONS = ["summary", "steps", "checks", "failures", "console", "context"
 // Loads a receipt and its evidence. records is null when there is no evidence to read (the notes say why).
 export async function loadEvidence({ dir, receipt: which = "latest", key }) {
   const files = await receiptFiles(dir);
-  if (files.length === 0) throw new Error(`no receipts in ${dir}`);
+  if (files.length === 0) throw new Error("no receipts in the receipts directory");
   let path;
   if (which === "latest") {
     path = files.at(-1);
   } else {
-    const wanted = resolve(isAbsolute(which) ? which : join(dir, which));
+    const asGiven = which.replace(/^<dir>[\\/]/, ""); // a path as this tool prints it (<dir>/name) names a receipt in the directory
+    const wanted = resolve(isAbsolute(asGiven) ? asGiven : join(dir, asGiven));
     path = files.find(file => resolve(file) === wanted);
-    if (!path) throw new Error(`${which} is not a receipt in ${dir}`);
+    if (!path) throw new Error(`${scrubReceiptFile(asGiven)} is not a receipt in the receipts directory`);
   }
   const notes = [];
   if (key) {

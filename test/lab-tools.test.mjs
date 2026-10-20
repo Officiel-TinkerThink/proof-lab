@@ -214,6 +214,10 @@ test("show: evidence is checked against the signed hash before it is read", asyn
     await assert.rejects(loadEvidence({ dir, receipt: "no-such.json", key: KEY }), /is not a receipt in/);
     const byName = await loadEvidence({ dir, receipt: paths.receiptPath.split(/[\\/]/).at(-1), key: KEY });
     assert.equal(byName.path, paths.receiptPath);
+    // a path as the tools print it (<dir>/name) names the same receipt, and a wrong one is refused without printing the directory
+    const asPrinted = await loadEvidence({ dir, receipt: `<dir>/${paths.receiptPath.split(/[\\/]/).at(-1)}`, key: KEY });
+    assert.equal(asPrinted.path, paths.receiptPath);
+    await assert.rejects(loadEvidence({ dir, receipt: "<dir>/no-such.json", key: KEY }), error => /^no-such\.json is not a receipt in the receipts directory$/.test(error.message));
 
     await chmod(paths.evidencePath, 0o644);
     await writeFile(paths.evidencePath, EVIDENCE.replace("logged error", "all fine"));
@@ -374,6 +378,14 @@ test("doctor: every setup problem is reported by name", TIMEOUT, async () => {
     // A check is named by the spec's file name: the directory the operator chose is not printed.
     assert.deepEqual(failedNames(specs), [`spec ${basename(invalid)}`, `app for ${basename(unreachable)} is reachable`, "spec missing.json"]);
     assert.match(formatDoctor(specs), /The setup is not sound\. Fix the failed checks above, do not guess\./);
+
+    // two specs with the same file name in different folders are told apart by position, never by folder
+    await mkdir(join(dir, "a"));
+    await mkdir(join(dir, "b"));
+    await writeFile(join(dir, "a", "same.json"), JSON.stringify({ name: "bad", steps: [{ op: "teleport" }] }));
+    await writeFile(join(dir, "b", "same.json"), JSON.stringify({ name: "bad", steps: [{ op: "teleport" }] }));
+    const twins = await runDoctor({ dir: receipts, keyFile, specPaths: [join(dir, "a", "same.json"), join(dir, "b", "same.json")] });
+    assert.deepEqual(failedNames(twins), ["spec #1 same.json", "spec #2 same.json"]);
   });
 });
 

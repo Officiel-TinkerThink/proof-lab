@@ -12,7 +12,7 @@ import { receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { createFixtureHandler } from "./fixtures.js";
 import { render, revisionOf } from "./server.js";
 import { runCli } from "./cli.js";
-import { scrubReceiptFile } from "./receipt-scrub.js";
+import { safeLine, scrubReceiptFile } from "./receipt-scrub.js";
 import { redactSecrets, scrubValue, specLabel } from "./spec/evidence.js";
 import { validateSpec } from "./spec/schema.js";
 import { firstLine, isMainModule, parseCli } from "./spec/util.js";
@@ -77,9 +77,9 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
     verified = await verifyChain(dir, key);
   } catch (error) {
     if (error.code === "ENOENT" || /^no receipts in /.test(error.message)) {
-      return answer("NO-RECEIPT", { ...base, advice: [`No receipt exists in ${dir}. Run the spec, then ask again.`] });
+      return answer("NO-RECEIPT", { ...base, advice: ["No receipt exists in the receipts directory. Run the spec, then ask again."] });
     }
-    return answer("CANNOT-TELL", { ...base, advice: [`The receipts could not be checked: ${redactSecrets(firstLine(error))}. Fix the setup.`] });
+    return answer("CANNOT-TELL", { ...base, advice: [`The receipts could not be checked: ${safeLine(error)}. Fix the setup.`] });
   }
   if (verified.problems.length > 0) {
     return answer("CANNOT-TELL", { ...base, problems: verified.problems, advice: ["The receipt chain does not verify, so no receipt can be trusted. Do not say done; hand a human the problems."] });

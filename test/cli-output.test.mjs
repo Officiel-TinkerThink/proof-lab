@@ -60,6 +60,27 @@ test("show, status and doctor print a receipt from a credential-looking director
   }
 });
 
+test("doctor and status on a first run (no receipt yet) print no directory", TIMEOUT, async () => {
+  const { dir, keyFile, receipts } = await workspace();
+  try {
+    await mkdir(receipts);
+    // The lab's own "no receipt yet" message used to embed the directory; here the directory holds nothing.
+    const doctor = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", WAITLIST]);
+    assert.match(doctor.stdout, /No receipt exists in the receipts directory/, doctor.stdout + doctor.stderr);
+    assert.equal(showsDirectory(doctor), false, "doctor");
+    const status = command("status.js", ["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts]);
+    assert.match(status.stdout, /No receipt exists in the receipts directory/, status.stdout + status.stderr);
+    assert.equal(showsDirectory(status), false, "status");
+    // A spec that cannot be read: the system error names the spec's full path, and only its file name may appear.
+    const missing = join(dir, "no-such-folder-Ab1Cd2", "missing.json");
+    const unreadable = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", missing]);
+    assert.match(unreadable.stdout, /spec missing\.json: cannot be read: .*<dir>\/missing\.json/, unreadable.stdout + unreadable.stderr);
+    assert.equal(unreadable.stdout.includes("no-such-folder"), false, "doctor, unreadable spec");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a command that fails prints an error line without the directory it failed on", TIMEOUT, async () => {
   const { dir, receipts } = await workspace();
   try {
