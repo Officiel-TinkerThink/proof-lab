@@ -15,7 +15,7 @@ import { runCli } from "./cli.js";
 import { safeLine, scrubReceiptFile } from "./receipt-scrub.js";
 import { redactSecrets, scrubValue, specLabel } from "./spec/evidence.js";
 import { validateSpec } from "./spec/schema.js";
-import { firstLine, isMainModule, parseCli } from "./spec/util.js";
+import { isMainModule, parseCli } from "./spec/util.js";
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
 const EXIT = { PASS: 0, FAIL: 1, STOP: 1, STALE: 1, UNVERIFIED: 1, "NO-RECEIPT": 1, "NEEDS-REVIEW": 3, ERROR: 2, "CANNOT-TELL": 2 };

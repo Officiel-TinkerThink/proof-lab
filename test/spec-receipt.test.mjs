@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSpec } from "../src/run-spec.js";
-import { safeLine, scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
+import { fromPrinted, safeLine, scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
 import { LAB_FILE_NAME, fixedStamp, verifyChain } from "../src/chain.js";
 import { KEY, TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
@@ -321,6 +321,18 @@ test("safeLine replaces the path a system error carries and keeps the rest of th
   assert.equal(safeLine(new Error("plain message")), "plain message");
   assert.equal(safeLine("a string"), "a string");
   assert.equal(safeLine(new Error("token=hunter2 failed")).includes("hunter2"), false);
+  // a file name with `$&` or `$$` must not be expanded (the directory would reappear): the path is replaced as given
+  for (const odd of ["/x/work/a$&b.json", "/x/work/a$$b.json", "/x/work/a$'b.json"]) {
+    const named = Object.assign(new Error(`ENOENT: no such file or directory, open '${odd}'`), { path: odd });
+    assert.equal(safeLine(named), `ENOENT: no such file or directory, open '<dir>/${odd.split("/").at(-1)}'`);
+  }
+  // a path held as a Buffer is replaced too
+  const buffered = Object.assign(new Error("ENOENT: no such file or directory, open '/x/work/y.json'"), { path: Buffer.from("/x/work/y.json") });
+  assert.equal(safeLine(buffered), "ENOENT: no such file or directory, open '<dir>/y.json'");
+  // a printed path read back
+  assert.equal(fromPrinted("<dir>/name.json"), "name.json");
+  assert.equal(fromPrinted("name.json"), "name.json");
+  assert.equal(fromPrinted("latest"), "latest");
 });
 
 test("every file name writeReceipt writes has the shape the path scrub keeps intact", TIMEOUT, async () => {

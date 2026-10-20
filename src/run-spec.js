@@ -181,7 +181,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   try {
     problems = validateSpec(spec);
   } catch (error) {
-    problems = [`the validator failed: ${firstLine(error)}`];
+    problems = [`the validator failed: ${safeLine(error)}`];
   }
   if (problems.length > 0) return refuse(`invalid spec: ${problems.join("; ")}`);
 

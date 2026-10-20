@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_EVIDENCE_BYTES, isEvidenceName, receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { runCli } from "./cli.js";
-import { scrubReceiptFile } from "./receipt-scrub.js";
+import { fromPrinted, scrubReceiptFile } from "./receipt-scrub.js";
 import { redactSecrets } from "./spec/evidence.js";
 import { isMainModule, parseCli } from "./spec/util.js";
 
@@ -21,7 +21,7 @@ export async function loadEvidence({ dir, receipt: which = "latest", key }) {
   if (which === "latest") {
     path = files.at(-1);
   } else {
-    const asGiven = which.replace(/^<dir>[\\/]/, ""); // a path as this tool prints it (<dir>/name) names a receipt in the directory
+    const asGiven = fromPrinted(which); // a path as this tool prints it (<dir>/name) names a receipt in the directory
     const wanted = resolve(isAbsolute(asGiven) ? asGiven : join(dir, asGiven));
     path = files.find(file => resolve(file) === wanted);
     if (!path) throw new Error(`${scrubReceiptFile(asGiven)} is not a receipt in the receipts directory`);
