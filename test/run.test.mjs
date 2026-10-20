@@ -74,7 +74,7 @@ test("the printed receipt does not carry a credential-looking receipts directory
   await mkdir(good);
   const written = prove(good);
   assert.equal(written.status, 0, written.stdout + written.stderr);
-  assert.match(JSON.parse(written.stdout).screenshot, /[\\/]\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.png$/, "the picture path keeps the file name");
+  assert.match(JSON.parse(written.stdout).screenshot, /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.png$/, "the receipt holds the picture's file name, not its path");
   assert.equal(written.stdout.includes("hunter2"), false, "the picture path must not carry the raw directory");
 
   const notADirectory = join(base, "token=hunter2");

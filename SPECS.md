@@ -206,7 +206,7 @@ A signed JSON file, `receipts/<stamp>-<revision>.json`, small on purpose:
 | `review` | `{total, items}`: claims from `review` steps that need a human (the first 20 as `{step, name, note?}`). Receipts from before this field have none. |
 | `evidence` | `{file, sha256, bytes}`: the evidence file next to the receipt, and its hash (covered by the signature) |
 | `pageErrors` | Up to 10 page errors, clipped |
-| `screenshot`, `error`, `next` | The final full-page screenshot; why the run is ERROR; what to do next |
+| `screenshot`, `error`, `next` | The file name of the final full-page screenshot (next to the receipt, stored by name like `evidence.file`; receipts from before this held its full path); why the run is ERROR; what to do next |
 | `keyId`, `prevHash`, `hash`, `mac` | The chain: each receipt links to the one before and is signed |
 
 ERROR means "cannot tell", never "broken": an unreachable app, a browser that did not start, an app that changed during

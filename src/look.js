@@ -13,6 +13,8 @@ import { clipValue, hideTokenSegments, redactClip, redactSecrets, scrubRecord } 
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
+import { runCli } from "./cli.js";
+import { scrubReceiptFile } from "./receipt-scrub.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 const ARIA_CHARS = 8000;
@@ -213,7 +215,7 @@ export function formatLook(result) {
   for (const record of result.console) lines.push(`  [console ${record.level}] ${record.text}`);
   for (const message of result.pageErrors) lines.push(`  [pageerror] ${message}`);
   for (const request of result.failedRequests) lines.push(`  [request] ${request.url} ${request.status ?? request.failure}`);
-  if (result.screenshot) lines.push(`  picture: ${result.screenshot}`);
+  if (result.screenshot) lines.push(`  picture: ${scrubReceiptFile(result.screenshot)}`);
   lines.push("  accessibility tree:");
   lines.push(...(result.aria === null ? ["    (unavailable)"] : result.aria.split("\n").map(line => `    ${line}`)));
   return lines.join("\n");
@@ -237,15 +239,9 @@ export async function main(args) {
     if (values.until.trim() === "" || !Number.isInteger(until)) throw new Error("--until must be a whole number");
   }
   const result = await look({ url: values.url, specPath: values.spec, until, screenshotPath: values.screenshot });
-  console.log(values.json ? JSON.stringify(result, null, 2) : formatLook(result));
+  // The picture path is the caller's own, kept raw in the result (look() returns it for the caller to open); printed, it is scrubbed.
+  console.log(values.json ? JSON.stringify(result.screenshot ? { ...result, screenshot: scrubReceiptFile(result.screenshot) } : result, null, 2) : formatLook(result));
   return 0;
 }
 
-if (isMainModule(import.meta.url)) {
-  try {
-    process.exitCode = await main(process.argv.slice(2));
-  } catch (error) {
-    console.error(`ERROR: ${redactSecrets(firstLine(error))}`);
-    process.exitCode = 2;
-  }
-}
+if (isMainModule(import.meta.url)) await runCli(() => main(process.argv.slice(2)));

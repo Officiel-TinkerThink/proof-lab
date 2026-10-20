@@ -329,10 +329,13 @@ export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTime
       try {
         let evidencePath = null;
         if (shot) {
-          const shotPath = join(dir, `${stamp}-${rev}.png`);
+          const shotName = `${stamp}-${rev}.png`;
+          const shotPath = join(dir, shotName);
           await writeAtomic(shotPath, shot);
           written.push(shotPath); // tracked once it exists, so a rollback never touches something this call did not create
-          receipt.screenshot = shotPath;
+          // By name, like the evidence file: the signed receipt never holds the path of the directory it sits in, so no
+          // command that prints a receipt can print that directory.
+          receipt.screenshot = shotName;
         }
         if (evidence !== undefined) {
           const name = `${stamp}-${rev}${EVIDENCE_SUFFIX}`;

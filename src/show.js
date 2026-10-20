@@ -6,7 +6,10 @@ import { lstat, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_EVIDENCE_BYTES, isEvidenceName, receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
-import { firstLine, isMainModule, parseCli } from "./spec/util.js";
+import { runCli } from "./cli.js";
+import { scrubReceiptFile } from "./receipt-scrub.js";
+import { redactSecrets } from "./spec/evidence.js";
+import { isMainModule, parseCli } from "./spec/util.js";
 
 const SECTIONS = ["summary", "steps", "checks", "failures", "console", "context"];
 
@@ -64,7 +67,7 @@ function checkLine(check) {
 export function render(section, { receipt, records, path }) {
   switch (section) {
     case "summary": {
-      const lines = [`${receipt.verdict} ${receipt.spec ?? ""} ${receipt.app ?? ""}`.trimEnd(), `  receipt:  ${path}`];
+      const lines = [`${receipt.verdict} ${receipt.spec ?? ""} ${receipt.app ?? ""}`.trimEnd(), `  receipt:  ${scrubReceiptFile(path)}`];
       if (receipt.evidence) lines.push(`  evidence: ${receipt.evidence.file} (${receipt.evidence.bytes} bytes)`);
       if (receipt.totals) lines.push(`  ${receipt.totals.checks} checks, ${receipt.totals.passed} passed, ${receipt.totals.failed} failed${receipt.totals.omitted ? ` (${receipt.totals.omitted} not listed here; see --checks)` : ""}`);
       for (const check of receipt.checks ?? []) lines.push(checkLine(check));
@@ -74,7 +77,8 @@ export function render(section, { receipt, records, path }) {
       }
       if (receipt.error) lines.push(`  error: ${receipt.error}`);
       for (const line of receipt.next ?? []) lines.push(`  -> ${line}`);
-      return { text: lines.join("\n"), data: receipt };
+      // A receipt written before the picture was stored by name holds the full path of the picture: scrub it on the way out.
+      return { text: lines.join("\n"), data: typeof receipt.screenshot === "string" ? { ...receipt, screenshot: scrubReceiptFile(receipt.screenshot) } : receipt };
     }
     case "steps": {
       const steps = ofType(records, "step");
@@ -149,23 +153,18 @@ export async function main(args, { defaultReceipts }) {
   if (values["save-picture"]) {
     const saved = await savePicture(loaded.records, values["save-picture"]);
     if (!saved) throw new Error("this run captured no picture (no check failed)");
-    console.error(`picture written to ${saved}`);
+    console.error(`picture written to ${scrubReceiptFile(saved)}`);
   }
   if (values.json) {
     console.log(JSON.stringify(Object.fromEntries(sections.map(name => [name, rendered[name].data])), null, 2));
   } else {
     for (const name of sections) console.log(sections.length > 1 ? `== ${name} ==\n${rendered[name].text}` : rendered[name].text);
-    for (const note of loaded.notes) console.error(`note: ${note}`);
+    for (const note of loaded.notes) console.error(`note: ${redactSecrets(note)}`);
   }
   return 0;
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    const root = fileURLToPath(new URL("..", import.meta.url));
-    process.exitCode = await main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") });
-  } catch (error) {
-    console.error(`ERROR: ${firstLine(error)}`);
-    process.exitCode = 2;
-  }
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  await runCli(() => main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") }));
 }

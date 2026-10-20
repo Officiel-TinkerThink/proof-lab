@@ -11,7 +11,9 @@ import { LOCK_NAME, environmentWithoutKey, keyIdOf, receiptFiles, signingKeyFrom
 import { startApp } from "./server.js";
 import { validateSpec } from "./spec/schema.js";
 import { firstLine, isMainModule, parseCli } from "./spec/util.js";
-import { formatStatus, statusOf } from "./status.js";
+import { runCli } from "./cli.js";
+import { scrubValue } from "./spec/evidence.js";
+import { formatStatus, scrubStatus, statusOf } from "./status.js";
 
 const MIN_NODE_MAJOR = 20;
 const BROWSER_TIMEOUT_MS = 30000;
@@ -153,7 +155,14 @@ export async function runDoctor({ dir, keyFile, specPaths = [] }) {
   return { ok: checks.every(check => check.ok), checks, statuses };
 }
 
-export function formatDoctor(result) {
+// Everything doctor prints goes through here, text and --json alike: a check's detail names the receipts directory, a spec
+// path or the text of a system error, and a status carries the receipt's path. Scrubbing twice changes nothing.
+export function scrubDoctor(raw) {
+  return { ...scrubValue({ ok: raw.ok, checks: raw.checks }), statuses: raw.statuses.map(scrubStatus) };
+}
+
+export function formatDoctor(raw) {
+  const result = scrubDoctor(raw);
   const lines = ["doctor"];
   for (const check of result.checks) lines.push(`  ${check.ok ? "ok  " : "FAIL"} ${check.name}: ${check.detail}`);
   for (const status of result.statuses) lines.push(`  info ${formatStatus(status).split("\n").join("\n       ")}`);
@@ -172,16 +181,11 @@ const CLI_OPTIONS = {
 export async function main(args, { defaultReceipts }) {
   const values = parseCli(args, CLI_OPTIONS);
   const result = await runDoctor({ dir: values.receipts ?? defaultReceipts, keyFile: values["key-file"], specPaths: values.spec ?? [] });
-  console.log(values.json ? JSON.stringify(result, null, 2) : formatDoctor(result));
+  console.log(values.json ? JSON.stringify(scrubDoctor(result), null, 2) : formatDoctor(result));
   return result.ok ? 0 : 2;
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    const root = fileURLToPath(new URL("..", import.meta.url));
-    process.exitCode = await main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") });
-  } catch (error) {
-    console.error(`ERROR: ${firstLine(error)}`);
-    process.exitCode = 2;
-  }
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  await runCli(() => main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") }));
 }

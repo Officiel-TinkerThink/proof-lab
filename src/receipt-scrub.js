@@ -17,22 +17,20 @@ export function scrubReceipt(receipt) {
   scrubbed.add(receipt);
 }
 
-// Steps 2 and 3, around the write. A receipt that cannot be written is not evidence, so the run becomes ERROR, never a
-// silent PASS; the system's error text names the path it failed on and arrives after step 1, so it is scrubbed as it is
-// set. writeReceipt also stores the picture's path on the receipt, with the raw receipts directory in it; the signed file
-// on disk keeps the real path, the receipt a caller gets and prints does not. Returns the written paths, or null.
+// Step 2, around the write. A receipt that cannot be written is not evidence, so the run becomes ERROR, never a silent
+// PASS; the system's error text names the path it failed on and arrives after step 1, so it is scrubbed as it is set.
+// (writeReceipt stores the picture and the evidence file by name, so the receipt holds no path of its own.)
+// Returns the written paths, or null.
 export async function writeScrubbedReceipt(receipt, options, advice) {
   if (!scrubbed.has(receipt)) throw new Error("writeScrubbedReceipt: scrubReceipt(receipt) must run first, so nothing unscrubbed is written");
-  let paths = null;
   try {
-    paths = await writeReceipt(receipt, options);
+    return await writeReceipt(receipt, options);
   } catch (error) {
     receipt.verdict = "ERROR";
     receipt.error = scrubValue(`receipt write failed: ${firstLine(error)}`);
     receipt.next = [receipt.error, advice];
+    return null;
   }
-  if (typeof receipt.screenshot === "string") receipt.screenshot = scrubReceiptFile(receipt.screenshot);
-  return paths;
 }
 
 // The name chain.js writes for a receipt: `${fileStamp(fixedStamp(at))}-${revision or "unknown"}.json`, where fixedStamp

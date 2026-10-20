@@ -1,0 +1,69 @@
+// No command prints the receipts directory raw. The directory name below looks like a credential (key=value) to the scrubber,
+// so any path of it that reaches the output shows as a leak. Each case runs the real command.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const SRC = join(ROOT, "src");
+const WAITLIST = join(ROOT, "specs", "waitlist.json");
+const TIMEOUT = { timeout: 240000 };
+
+function command(file, args) {
+  const { PROOF_LAB_KEY: _ignored, ...clean } = process.env;
+  return spawnSync(process.execPath, [join(SRC, file), ...args], { encoding: "utf8", env: clean });
+}
+
+async function workspace() {
+  const dir = await mkdtemp(join(tmpdir(), "proof-output-"));
+  const keyFile = join(dir, "key.txt");
+  await writeFile(keyFile, "k".repeat(48));
+  if (process.platform !== "win32") await chmod(keyFile, 0o600);
+  return { dir, keyFile, receipts: join(dir, "password=hunter2") };
+}
+
+const leaks = result => `${result.stdout}${result.stderr}`.includes("hunter2");
+
+test("show, status and doctor print a receipt from a credential-looking directory without that directory", TIMEOUT, async () => {
+  const { dir, keyFile, receipts } = await workspace();
+  try {
+    await mkdir(receipts);
+    const run = command("run-spec.js", ["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts]);
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(leaks(run), false, "run");
+
+    for (const args of [["--json"], ["--summary"], []]) {
+      const shown = command("show.js", ["--receipts", receipts, ...args]);
+      assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+      assert.equal(leaks(shown), false, `show ${args.join(" ")}`);
+    }
+    const status = command("status.js", ["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts, "--json"]);
+    assert.equal(leaks(status), false, "status --json");
+
+    for (const args of [[], ["--json"]]) {
+      const doctor = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", WAITLIST, ...args]);
+      assert.equal(leaks(doctor), false, `doctor ${args.join(" ")}`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a command that fails prints an error line without the directory it failed on", TIMEOUT, async () => {
+  const { dir, receipts } = await workspace();
+  try {
+    // No receipts there: show fails with an error that names the directory; lab show goes through the same top-level block.
+    for (const [file, args] of [["show.js", ["--receipts", receipts]], ["lab.js", ["show", "--receipts", receipts]]]) {
+      const failed = command(file, args);
+      assert.equal(failed.status, 2, failed.stdout + failed.stderr);
+      assert.match(failed.stderr, /^ERROR: /m);
+      assert.equal(leaks(failed), false, `${file} ${args.join(" ")}`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

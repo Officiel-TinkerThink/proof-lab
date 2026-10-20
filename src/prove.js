@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { scrubReceipt, writeScrubbedReceipt } from "./receipt-scrub.js";
+import { safeLine } from "./spec/evidence.js";
 import { startApp } from "./server.js";
 import {
   GENESIS,
@@ -150,7 +151,7 @@ export async function verifyReceipts({ receiptsDir = DEFAULT_RECEIPTS, key, expe
   try {
     result = await verifyChain(receiptsDir, key);
   } catch (error) {
-    console.error(`cannot verify: ${firstLine(error)}`);
+    console.error(`cannot verify: ${safeLine(error)}`);
     return 2;
   }
   const problems = [...result.problems];
@@ -158,7 +159,7 @@ export async function verifyReceipts({ receiptsDir = DEFAULT_RECEIPTS, key, expe
   try {
     head = await latestHash(receiptsDir);
   } catch (error) {
-    problems.push(`head: ${firstLine(error)}`);
+    problems.push(`head: ${safeLine(error)}`);
   }
   if (expectHead && head !== expectHead) {
     problems.push("head does not match --expect-head: receipts were added or removed since that head was recorded");
@@ -188,7 +189,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     }
     key = await signingKeyFromFile(flag("--key-file"));
   } catch (error) {
-    console.error(firstLine(error));
+    console.error(safeLine(error));
     process.exitCode = 2;
   }
   if (key) {

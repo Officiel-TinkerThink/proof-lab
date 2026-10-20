@@ -14,6 +14,7 @@ import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
+import { runCli } from "./cli.js";
 import { scrubReceipt, scrubReceiptFile, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
@@ -384,12 +385,4 @@ export async function main(args) {
   return exitCodeOf(receipt);
 }
 
-if (isMainModule(import.meta.url)) {
-  try {
-    process.exitCode = await main(process.argv.slice(2));
-  } catch (error) {
-    // Exit 2, never 1: 1 means "a check failed", and an unexpected exception is not that.
-    console.error(`ERROR: ${redactSecrets(firstLine(error))}`);
-    process.exitCode = 2;
-  }
-}
+if (isMainModule(import.meta.url)) await runCli(() => main(process.argv.slice(2)));

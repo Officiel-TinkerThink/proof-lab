@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { createFixtureHandler } from "./fixtures.js";
 import { render, revisionOf } from "./server.js";
+import { runCli } from "./cli.js";
 import { scrubReceiptFile } from "./receipt-scrub.js";
 import { redactSecrets, scrubValue, specLabel } from "./spec/evidence.js";
 import { validateSpec } from "./spec/schema.js";
@@ -199,11 +200,6 @@ export async function main(args, { defaultReceipts }) {
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    const root = fileURLToPath(new URL("..", import.meta.url));
-    process.exitCode = await main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") });
-  } catch (error) {
-    console.error(`ERROR: ${redactSecrets(firstLine(error))}`);
-    process.exitCode = 2;
-  }
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  await runCli(() => main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(root, "receipts") }));
 }

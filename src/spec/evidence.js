@@ -2,6 +2,7 @@
 // investigate (every check, the step timeline, console output) goes to an evidence file kept next to the receipt.
 // The receipt carries the evidence file's hash, so the details cannot be swapped without the signature failing.
 import { createHmac, randomBytes } from "node:crypto";
+import { firstLine } from "./util.js";
 
 // The file name suffix is EVIDENCE_SUFFIX in chain.js, which writes and verifies the file.
 export const MAX_LISTED_FAILURES = 20;
@@ -122,6 +123,10 @@ export function redactSecrets(text) {
   const scrubbed = SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), body);
   return note === null ? scrubbed : scrubbed + note[0];
 }
+
+// The first line of an error, scrubbed. The text of a system or library error names the path it failed on, so any error
+// line a command prints goes through this, never through firstLine alone.
+export const safeLine = error => redactSecrets(firstLine(error));
 
 // redactSecrets over every string inside a value (a check's expected and actual can be text or a small object).
 // Below the depth limit the rest is redacted as one JSON text, so nothing nested deeper is ever left raw.

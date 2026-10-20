@@ -2,7 +2,8 @@
 // this file only picks it and keeps the exit-code contract: 0 pass, 1 a check or gate says no, 2 cannot tell.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule, firstLine } from "./spec/util.js";
+import { runCli } from "./cli.js";
+import { isMainModule } from "./spec/util.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultReceipts = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts");
@@ -35,11 +36,4 @@ export async function main(args) {
   return command.withDefaults ? module.main(rest, { defaultReceipts }) : module.main(rest);
 }
 
-if (isMainModule(import.meta.url)) {
-  try {
-    process.exitCode = await main(process.argv.slice(2));
-  } catch (error) {
-    console.error(`ERROR: ${firstLine(error)}`);
-    process.exitCode = 2;
-  }
-}
+if (isMainModule(import.meta.url)) await runCli(() => main(process.argv.slice(2)));
