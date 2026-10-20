@@ -6,8 +6,8 @@ Read first: `HANDOFF.md` (older state and history), `SPECS.md` lines 176-181 (th
 
 ## State
 
-- Code head: `7da1456`. Last reviewed head: `7da1456` (defect and security review, cycle 3 of 5: no finding). The review run is **done**; there is no unreviewed code. Later commits are documentation only.
-- Gate: `node --test test/*.test.mjs` gives 244 tests, 243 pass, 1 skipped, 0 fail. **`npm test` is not the gate**: it runs only `test/run.test.mjs` (the prove scenarios). The full run takes about 90 s; run it in the background.
+- Code head: `211574c`. Last reviewed head: `211574c` (run 6: defect and security review of `cc4e551`, cycle 4: no finding; defect review of the drive-path fix `211574c`, cycle 5: no finding). Run 6 used the five-cycle cap; the latest change has a clean review. There is no unreviewed code.
+- Gate: `node --test test/*.test.mjs` gives 244 tests, 243 pass, 1 skipped, 0 fail (log `proof-lab-node-test-bg-20.log`). **`npm test` is not the gate**: it runs only `test/run.test.mjs` (the prove scenarios). The full run takes about 90-150 s; run it in the background.
 - The one skipped test is `a key file readable by group or others is refused` (`test/durability.test.mjs:39`). It checks POSIX file modes, so it runs only on Linux and macOS and is skipped on Windows.
 - Demo (`node demo/run-demo.mjs`: PASS 0; FAIL 1 twice; NEEDS-REVIEW 3; expectations PASS 0; ERROR 2 twice; chain VALID 0; tamper INVALID 1) was last verified on `d8bd36c`. **It was not re-run after the changes below.** Run it before relying on it.
 
@@ -64,3 +64,5 @@ The root cause of every raw-path leak was that nothing forced a command's output
 - Run 3 (cap 5, used 4): S2.17, the same root cause in every command: `29343d6`, `11a2974`.
 - Run 4 (cap 5, used 3): S2.14 at the root, the directory is never printed: `5eb87c8`, `3d0a5f0`, `77561b6`, `083fe6e`, `a8ab385`. Last review: no finding.
 - Run 5 (cap 5, used 3): `safeLine` redesigned to build a system error's line from its fields instead of searching its message (it had been patched in four consecutive cycles): `b9b7a1e`, `c3f45c9`, `7da1456`. Last review (defect and security): no finding.
+- Run 6 (cap 5, used 5): stale lock claim `.chain.lock.stale-<12 hex>` named in an error line; code and call printed only in Node's shapes (`<code>`/`<call>` otherwise): `cc4e551`. Drive-relative lock path (`D:.chain.lock`) shows its name: `211574c`. Reviews: cycle 4 (security, defect) no finding; cycle 5 (defect on `211574c`) no finding.
+- Unclear items left as they are (both reviewers: no producer in `src/`, fails safe): `CODE_SHAPE`/`CALL_SHAPE` have no length bound (a dependency error could in theory carry a bare word). Say if the owner wants a bound.
