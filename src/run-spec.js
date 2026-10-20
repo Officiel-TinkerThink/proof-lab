@@ -14,6 +14,7 @@ import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
+import { scrubReceiptFile } from "./status.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -372,7 +373,7 @@ export async function main(args) {
   const key = await signingKeyFromFile(values["key-file"]);
   const receipt = await runSpec({ specPath: values.spec, key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS });
   if (values.json) {
-    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ?? null, evidenceFile: receipt.detail?.evidencePath ?? null }, null, 2));
+    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ?? null }, null, 2));
   } else {
     const totals = receipt.totals;
     console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());
@@ -383,7 +384,7 @@ export async function main(args) {
       for (const item of receipt.review.items) console.log(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
     }
     if (receipt.error) console.log(`  error: ${receipt.error}`);
-    if (receipt.detail?.receiptPath) console.log(`  receipt:  ${receipt.detail.receiptPath}`);
+    if (receipt.detail?.receiptPath) console.log(`  receipt:  ${scrubReceiptFile(receipt.detail.receiptPath)}`);
     if (receipt.detail?.evidencePath) console.log(`  evidence: ${receipt.detail.evidencePath}`);
   }
   return exitCodeOf(receipt);

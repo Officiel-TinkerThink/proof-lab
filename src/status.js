@@ -155,7 +155,7 @@ export function scrubStatus(raw) {
 // A name the lab did not write (renamed, or hand-placed) is scrubbed together with the whole path, because a run joined
 // by "/" is judged as a whole. Only a lab-shaped name is kept intact; then the directory above it is scrubbed alone, and
 // the separator stays outside that scrub so a value run in the directory cannot swallow it.
-function scrubReceiptFile(path) {
+export function scrubReceiptFile(path) {
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   // A bare drive letter ("D:name.json") ends the directory part at the colon.
   const nameStart = Math.max(cut + 1, /^[A-Za-z]:/.test(path) ? 2 : 0);

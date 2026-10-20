@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,6 +120,25 @@ test("the CLI exits 0 on PASS, prints the summary and the file names, and --json
     assert.match(parsed.receiptFile, /\.json$/);
     assert.match(parsed.evidenceFile, /\.evidence\.jsonl$/);
     assert.equal((await readdir(receipts)).filter(name => name.endsWith(".json")).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the CLI scrubs the receipt path in both the text and the --json output", TIMEOUT, async () => {
+  const { dir, keyFile } = await workspace();
+  try {
+    const receipts = join(dir, "password=hunter2");
+    await mkdir(receipts, { recursive: true });
+    const text = cli(["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts]);
+    assert.equal(text.status, 0, text.stdout + text.stderr);
+    assert.match(text.stdout, /receipt:  .*\.json/);
+    assert.equal(/receipt:  .*hunter2/.test(text.stdout), false, text.stdout);
+    const json = cli(["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts, "--json"]);
+    assert.equal(json.status, 0, json.stdout + json.stderr);
+    const parsed = JSON.parse(json.stdout);
+    assert.match(parsed.receiptFile, /\.json$/);
+    assert.equal(parsed.receiptFile.includes("hunter2"), false, parsed.receiptFile);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
