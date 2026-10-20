@@ -45,9 +45,10 @@ export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /
 // its lock file). Any other path, a directory or a file the operator named, is `<path>`. An allow-list, because whether a
 // path is a directory cannot be told from the call that failed on it (stat, open and realpath take either), and a list of
 // directory calls would never be complete.
-const lastSegment = path => path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+// Where the file name starts: after the last separator, or after a bare drive letter ("D:.chain.lock" is D: plus the name).
+const nameStart = path => Math.max(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1, /^[A-Za-z]:/.test(path) ? 2 : 0);
 const isLabName = name => LAB_FILE_NAME.test(name) || name === LOCK_NAME || STALE_CLAIM_NAME.test(name);
-const shownPath = path => (isLabName(lastSegment(path)) ? scrubReceiptFile(path) : "<path>");
+const shownPath = path => (isLabName(path.slice(nameStart(path))) ? scrubReceiptFile(path) : "<path>");
 // The code and the call are printed only in the shapes Node writes them (ENOENT, ERR_FS_EISDIR; open, spawn). Any other text
 // there is shown as a placeholder: an allow-list, not a pattern, so a value from a dependency cannot put a path in the line.
 const CODE_SHAPE = /^[A-Z][A-Z0-9_]*$/;
@@ -94,10 +95,8 @@ export function safeLine(error) {
 // already knows it, and guessing whether a folder name looks like a secret has no end (it hides harmless names and misses
 // others). What is left is the file name: the lab's own shape is kept intact, any other name is scrubbed like free text.
 export function scrubReceiptFile(path) {
-  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  // A bare drive letter ("D:name.json") ends the directory part at the colon.
-  const nameStart = Math.max(cut + 1, /^[A-Za-z]:/.test(path) ? 2 : 0);
-  const name = path.slice(nameStart);
+  const start = nameStart(path);
+  const name = path.slice(start);
   const shown = LAB_FILE_NAME.test(name) ? name : redactSecrets(name); // only the exact shape chain.js writes is kept as it is
-  return nameStart === 0 ? shown : `${DIR_PLACEHOLDER}${shown}`; // a bare name has no directory to hide
+  return start === 0 ? shown : `${DIR_PLACEHOLDER}${shown}`; // a bare name has no directory to hide
 }

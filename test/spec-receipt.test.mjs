@@ -378,6 +378,8 @@ test("safeLine builds a system error's line from its fields, and names only the 
   // a stale lock claim the writer makes is the lab's own name: it is shown, so the operator can tell which lab file failed
   const stale = systemError("EPERM", "rename", "/x/work/.chain.lock.stale-0123456789ab", "/x/work/.chain.lock");
   assert.equal(safeLine(stale), "EPERM: operation not permitted, rename '<dir>/.chain.lock.stale-0123456789ab' -> '<dir>/.chain.lock'");
+  // A receipts directory given as a bare drive ("D:") joins to "D:.chain.lock": the name still starts after the colon.
+  assert.equal(safeLine(systemError("ENOENT", "open", "D:.chain.lock")), `${gone}, open '<dir>/.chain.lock'`);
   // the code and the call are printed only in Node's shapes: anything else is a placeholder, whatever text it holds
   assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/y.json"), { syscall: "/opt/Client-Acme-Study7/open" })), `${gone}, <call> '<path>'`);
   assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/y.json"), { code: "token=hunter2" })).includes("hunter2"), false);
