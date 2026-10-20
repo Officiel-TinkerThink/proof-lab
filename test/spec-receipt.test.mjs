@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSpec } from "../src/run-spec.js";
 import { scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
-import { fixedStamp, verifyChain } from "../src/chain.js";
+import { LAB_FILE_NAME, fixedStamp, verifyChain } from "../src/chain.js";
 import { KEY, TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
 const WAITLIST = fileURLToPath(new URL("../specs/waitlist.json", import.meta.url));
@@ -309,6 +309,23 @@ test("a receipt that cannot be written makes the run ERROR and leaves nothing ha
     assert.equal(await readFile(notADirectory, "utf8"), "a file where the receipts directory should be");
   } finally {
     await rm(workdir, { recursive: true, force: true });
+  }
+});
+
+test("every file name writeReceipt writes has the shape the path scrub keeps intact", TIMEOUT, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "proof-names-"));
+  try {
+    for (const revision of ["0123456789ab", null]) {
+      const receipt = { verdict: "PASS", app: "http://127.0.0.1:1", revision, at: fixedStamp(), checks: [], screenshot: null, error: null, next: [] };
+      scrubReceipt(receipt);
+      await writeScrubbedReceipt(receipt, { shot: Buffer.from("png"), evidence: '{"type":"run"}\n', key: KEY, dir }, "advice");
+      assert.match(receipt.screenshot, LAB_FILE_NAME);
+    }
+    const names = (await readdir(dir)).filter(name => !name.startsWith("."));
+    assert.equal(names.length, 6, "two receipts, each with a picture and an evidence file");
+    for (const name of names) assert.match(name, LAB_FILE_NAME);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

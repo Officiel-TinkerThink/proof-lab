@@ -16,7 +16,11 @@ export const LOCK_TIMEOUT_MS = 30000;
 export const EVIDENCE_SUFFIX = ".evidence.jsonl";
 // Evidence is small by construction (a few hundred records at most). A bigger file is refused when written and when verified.
 export const MAX_EVIDENCE_BYTES = 64 * 1024 * 1024;
-const REVISION = /^[0-9a-f]{12}$/;
+const REVISION_HEX = "[0-9a-f]{12}";
+const REVISION = new RegExp(`^${REVISION_HEX}$`);
+// The suffixes of the three files written under one stem: the receipt, the picture and (above) the evidence.
+const RECEIPT_SUFFIX = ".json";
+const PICTURE_SUFFIX = ".png";
 // The only shape a receipt may name as its evidence: letters, digits and hyphens, then the suffix. No separators, no
 // colon (an NTFS alternate data stream), no extra dots, and never a Windows device name such as CON.
 const EVIDENCE_NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\.evidence\.jsonl$/;
@@ -61,6 +65,14 @@ export function fileStamp(at) {
 export function revisionOrUnknown(revision) {
   return typeof revision === "string" && REVISION.test(revision) ? revision : "unknown";
 }
+
+// The one definition of the name the lab gives a file it writes: `${fileStamp(fixedStamp(at))}-${revision or "unknown"}` plus
+// one of the three suffixes. writeReceipt builds the names, and the scrub of a printed path (receipt-scrub.js) keeps exactly
+// this shape intact, so the two cannot drift apart: a name the lab writes can never be mangled by the scrub.
+const escapeDots = text => text.replaceAll(".", "\\.");
+export const LAB_FILE_NAME = new RegExp(
+  `^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{9}Z-(?:${REVISION_HEX}|unknown)(?:${[RECEIPT_SUFFIX, PICTURE_SUFFIX, EVIDENCE_SUFFIX].map(escapeDots).join("|")})$`,
+);
 
 // Lone surrogates become U+FFFD, as Go's encoder writes them; JSON.stringify would emit \udXXX escapes instead.
 const wellFormed = (_key, value) => (typeof value === "string" ? value.toWellFormed() : value);
@@ -315,7 +327,7 @@ export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTime
   await mkdir(dir, { recursive: true });
   const stamp = fileStamp(receipt.at);
   const rev = revisionOrUnknown(receipt.revision);
-  const newName = `${stamp}-${rev}.json`;
+  const newName = `${stamp}-${rev}${RECEIPT_SUFFIX}`;
   const before = { screenshot: receipt.screenshot, evidence: receipt.evidence, keyId: receipt.keyId, prevHash: receipt.prevHash };
   try {
     return await withChainLock(dir, lockTimeoutMs, async () => {
@@ -329,7 +341,7 @@ export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTime
       try {
         let evidencePath = null;
         if (shot) {
-          const shotName = `${stamp}-${rev}.png`;
+          const shotName = `${stamp}-${rev}${PICTURE_SUFFIX}`;
           const shotPath = join(dir, shotName);
           await writeAtomic(shotPath, shot);
           written.push(shotPath); // tracked once it exists, so a rollback never touches something this call did not create

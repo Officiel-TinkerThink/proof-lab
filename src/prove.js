@@ -5,8 +5,10 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { runCli } from "./cli.js";
 import { scrubReceipt, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { safeLine } from "./spec/evidence.js";
+import { firstLine, isMainModule } from "./spec/util.js";
 import { startApp } from "./server.js";
 import {
   GENESIS,
@@ -27,8 +29,6 @@ const TIMEOUT_MS = 3000;
 // A page load is where machine load shows first (a cold browser on a busy host took more than 3 s and the run came back
 // ERROR: "page.goto: Timeout 3000ms exceeded"). Navigation gets its own, longer budget; checks keep the short one.
 const NAVIGATION_TIMEOUT_MS = 20000;
-
-const firstLine = error => (error instanceof Error ? error.message : String(error)).split("\n")[0];
 
 async function serverRevision(url) {
   const response = await fetch(new URL("/__revision", url), { signal: AbortSignal.timeout(2000) });
@@ -174,11 +174,10 @@ export async function verifyReceipts({ receiptsDir = DEFAULT_RECEIPTS, key, expe
 }
 
 // CLI: node src/prove.js --key-file <path> [--url <http://...>] [--bug <name>] [--receipts <dir>] | --verify [--expect-head <hash>]
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const args = process.argv.slice(2);
-  const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-  let key;
-  try {
+if (isMainModule(import.meta.url)) {
+  await runCli(async () => {
+    const args = process.argv.slice(2);
+    const flag = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
     // The key comes only from --key-file. A key variable in the environment stays readable through /proc/<pid>/environ
     // and by child processes, even after the variable is deleted, so the run refuses to start while it is set.
     if (Object.hasOwn(process.env, KEY_ENV)) {
@@ -187,18 +186,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     if (!flag("--key-file")) {
       throw new Error("--key-file <path> is required: the signing key is read from a 0600 file, never from the environment");
     }
-    key = await signingKeyFromFile(flag("--key-file"));
-  } catch (error) {
-    console.error(safeLine(error));
-    process.exitCode = 2;
-  }
-  if (key) {
-    if (args.includes("--verify")) {
-      process.exitCode = await verifyReceipts({ receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS, key, expectHead: flag("--expect-head") });
-    } else {
-      const receipt = await prove({ url: flag("--url"), bug: flag("--bug"), receiptsDir: flag("--receipts") ?? DEFAULT_RECEIPTS, key });
-      console.log(JSON.stringify(receipt, null, 2));
-      process.exitCode = receipt.verdict === "PASS" ? 0 : receipt.verdict === "FAIL" ? 1 : 2;
-    }
-  }
+    const key = await signingKeyFromFile(flag("--key-file"));
+    const receiptsDir = flag("--receipts") ?? DEFAULT_RECEIPTS;
+    if (args.includes("--verify")) return verifyReceipts({ receiptsDir, key, expectHead: flag("--expect-head") });
+    const receipt = await prove({ url: flag("--url"), bug: flag("--bug"), receiptsDir, key });
+    console.log(JSON.stringify(receipt, null, 2));
+    return receipt.verdict === "PASS" ? 0 : receipt.verdict === "FAIL" ? 1 : 2;
+  });
 }

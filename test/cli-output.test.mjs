@@ -41,13 +41,17 @@ test("show, status and doctor print a receipt from a credential-looking director
       assert.equal(shown.status, 0, shown.stdout + shown.stderr);
       assert.equal(leaks(shown), false, `show ${args.join(" ")}`);
     }
+    // The output itself is checked too, so a command that crashed before printing cannot pass for a clean one.
     const status = command("status.js", ["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts, "--json"]);
+    assert.equal(JSON.parse(status.stdout).state, "PASS", status.stdout + status.stderr);
     assert.equal(leaks(status), false, "status --json");
 
-    for (const args of [[], ["--json"]]) {
-      const doctor = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", WAITLIST, ...args]);
-      assert.equal(leaks(doctor), false, `doctor ${args.join(" ")}`);
-    }
+    const doctorJson = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", WAITLIST, "--json"]);
+    assert.ok(Array.isArray(JSON.parse(doctorJson.stdout).checks), doctorJson.stdout + doctorJson.stderr);
+    assert.equal(leaks(doctorJson), false, "doctor --json");
+    const doctorText = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", WAITLIST]);
+    assert.match(doctorText.stdout, /^doctor\n/, doctorText.stdout + doctorText.stderr);
+    assert.equal(leaks(doctorText), false, "doctor");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -57,7 +61,9 @@ test("a command that fails prints an error line without the directory it failed 
   const { dir, receipts } = await workspace();
   try {
     // No receipts there: show fails with an error that names the directory; lab show goes through the same top-level block.
-    for (const [file, args] of [["show.js", ["--receipts", receipts]], ["lab.js", ["show", "--receipts", receipts]]]) {
+    // prove fails on a key file that is not there, and the system's error names the path of it.
+    const missingKey = join(receipts, "key.txt");
+    for (const [file, args] of [["show.js", ["--receipts", receipts]], ["lab.js", ["show", "--receipts", receipts]], ["prove.js", ["--key-file", missingKey]], ["prove.js", ["--verify", "--key-file", missingKey]]]) {
       const failed = command(file, args);
       assert.equal(failed.status, 2, failed.stdout + failed.stderr);
       assert.match(failed.stderr, /^ERROR: /m);
