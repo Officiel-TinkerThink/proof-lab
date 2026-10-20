@@ -25,6 +25,7 @@ Planned fix: record structural data by default (names, pass or fail, counts, len
 | S2.10 | A page error cut inside a `[query hidden]` marker can be re-expanded by a later scrub. | low |
 | S2.11 | An HTML-entity quoted value stops at an escaped closer (`\&quot;`). | low |
 | S2.12 | A password that begins with digits and continues with one of `;`, `<`, `>` or a closing bracket right after the digits (`//u:1234;x@h`) is read as a port and kept; the delimiter set is spelled out in SPECS.md. | low |
+| S2.13 | A quoted sentence that contains an address takes the text up to its closing quote into the hidden query (for example `"What? see https://a.b/c?x=1 and more" ok` hides `see … and more`). Follows the spec's blank-inside-query rule; errs toward hiding. | low |
 
 ## S3. Other deferred items
 

@@ -822,8 +822,17 @@ test("redactSecrets: text after a quoted address is kept; an unclosed quote hide
 
 test("scrubStatus: the receipt path is kept, other fields are scrubbed", async () => {
   const { scrubStatus } = await import("../src/status.js");
-  const file = "D:/receipts/2026-10-19T10-00-00-000000000Z-0123456789ab.json";
-  const shown = scrubStatus({ receiptFile: file, advice: ["password=hunter2 next"] });
-  assert.equal(shown.receiptFile, file);
+  const name = "2026-10-19T10-00-00-000000000Z-0123456789ab.json";
+  const shown = scrubStatus({ receiptFile: `D:/receipts/${name}`, advice: ["password=hunter2 next"] });
+  assert.equal(shown.receiptFile, `D:/receipts/${name}`);
   assert.equal(shown.advice[0].includes("hunter2"), false);
+  // a credential-shaped directory is scrubbed; the file name the lab wrote stays intact
+  const hidden = scrubStatus({ receiptFile: `D:/runs/password=hunter2/${name}` });
+  assert.equal(hidden.receiptFile.includes("hunter2"), false);
+  assert.equal(hidden.receiptFile.endsWith(`/${name}`), true);
+});
+
+test("redactSecrets: a quote inside a quoted address query stays in the query when a letter follows it", () => {
+  assert.equal(redactSecrets(`"https://h/x?a=1 b"c d"`), `"https://h/x?[query hidden]"`);
+  assert.equal(redactSecrets(`Could not load "https://h/x?q=1". Retrying in 5 s`), `Could not load "https://h/x?[query hidden]". Retrying in 5 s`);
 });

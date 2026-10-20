@@ -4,33 +4,37 @@ Date: 2026-10-20. Branch: `feat/regression-tests`. Remote: none configured, noth
 
 ## State
 
-- Working tree: clean after the commit that adds this file. The last fix commit is the cycle-14 commit.
-- Gates on the final tree (log names `gate-{a,b,c}-0024`, all in `C:/Users/wahyu.sinurat-mp/.claude-me/agent-kit/verification-logs/`):
-  - A: 72 tests, 71 pass, 0 fail, 1 skipped (key-file group/other-readable permission test; not runnable on this Windows host).
-  - B: 54 tests, 54 pass, 0 fail.
-  - C: 106 tests, 106 pass, 0 fail.
-- `node demo/run-demo.mjs` ran before the cycle-14 fixes. Output shows PASS 0, FAIL 1 (two bugs), NEEDS-REVIEW 3, expectations PASS 0, ERROR 2 (invalid spec, no checks), chain VALID, tamper INVALID. Re-run it once before showing the owner.
+- Last commit: `164570c` (cycle-14 fixes and this file). Gates for it are green: `gate-{a,b,c}-0024`.
+- **Uncommitted, in progress (cycle 15 fixes):**
+  - `src/spec/evidence.js`: the quoted-address rule. A quote inside the query stays in it when a letter, digit or `_` follows it. The blank group after the query also takes such quotes, so `"https://h/x?a=1 b"c d"` hides the whole address.
+  - `src/status.js`: `scrubStatus` keeps the receipt file name intact and scrubs the directory above it. The separator is kept outside the scrub.
+  - `test/spec-expect.test.mjs`: tests for the quote rule and for the receipt path.
+  - `spec-expect` suite: 72 of 72 pass on these edits.
+  - Gates A, B and C have NOT been rerun on these edits. Run them before committing.
+- Demo: `node demo/run-demo.mjs` was rerun on `164570c` and matched every expected verdict, exit code and chain result. Rerun after the uncommitted edits, then show the owner every receipt variant.
+
+## Review status
+
+- Cycle 15 (the review of the cycle-14 fixes):
+  - Defect reviewer: 0 findings. Its out-of-scope items are in the backlog list below.
+  - Spec reviewer: 2 findings, both fixed in the uncommitted edits above. F1 receipt path printed unscrubbed. F2 a quote inside the query ended the match too early.
+- The loop is not yet clean: the cycle-15 fixes have not been reviewed. Run one more cycle (defect and spec reviewers on the diff `164570c..HEAD`, with the scope contract in `SECURITY-BACKLOG.md`).
+- New limit to add to the backlog: a quoted sentence that contains an address takes the text up to its closing quote into the hidden query (for example `"What? see https://a.b/c?x=1 and more" ok` hides `see … and more`). This follows the spec's "blanks inside the query" rule and errs toward hiding. Record it as S2.13.
 
 ## Commits (this branch)
 
 - `542c486`, `c6f7148`, `ae1d8ea`: cycles 9 to 11.
 - `6b7f3e4`: cycle 12 fixes.
 - `7e4edfc`: cycle 13 fixes, `SECURITY-BACKLOG.md`.
-- Cycle-14 fixes: the commit that adds this file.
-
-## What changed in cycle 14
-
-- Quoted address: text after a quoted address is kept. Unclosed quotes hide only the query, up to the first blank. Quote handling in the query follows SPECS.md.
-- `status` and `doctor`: the receipt path is no longer scrubbed. `scrubStatus` in `src/status.js` replaces the old `scrubValue(raw)` call, and `formatStatus` uses it too.
-- Port delimiter set spelled out in SPECS.md. `;`, `<`, `>` were added to the documented set.
-- Tests added: quoted address, `scrubStatus`.
+- `164570c`: cycle 14 fixes, `HANDOFF.md`.
 
 ## Open items, in order
 
-1. **Cycle-15 review of the cycle-14 fixes was not run.** Stop condition not yet met. Run `code-review:defect-reviewer` and `code-review:spec-reviewer` on the diff `7e4edfc..HEAD`, with the scope contract from `SECURITY-BACKLOG.md` (in scope: wrong results, crashes, non-idempotent scrub, destroyed ordinary text; out of scope: hardening and hostile-input shapes). Judge each finding; fix in-scope ones; park the rest in the backlog.
-2. Re-run `node demo/run-demo.mjs` after any change, and show the owner every receipt variant.
-3. **Security redesign (backlog S1) is deferred** per owner direction. Do not start it without a new decision.
-4. Untracked `denyB.out` in `D:/core/projects/agent-kit` is not ours; leave it.
+1. Commit the uncommitted cycle-15 edits after gates A, B and C pass on them.
+2. Run the cycle-16 review on the cycle-15 fixes (see Review status). Fix in-scope findings, park the rest in the backlog. Stop when a cycle yields no in-scope finding.
+3. Rerun the demo after the last change and show all receipt variants to the owner.
+4. Security redesign (backlog S1) is deferred per owner direction. Do not start it without a new decision.
+5. Untracked `denyB.out` in `D:/core/projects/agent-kit` is not ours; leave it.
 
 ## Quarantined files (restore only if needed; the owner runs this)
 

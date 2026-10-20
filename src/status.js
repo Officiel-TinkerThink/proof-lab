@@ -143,8 +143,14 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
 
 // Scrubbed here, so every caller (status, doctor) prints safe text whichever field later holds app-supplied text.
 export function scrubStatus(raw) {
-  // The receipt path is built by the lab (dir plus a time-and-revision file name): scrubbing it turns the name into garbage.
-  return { ...scrubValue(raw), ...(raw.receiptFile === undefined ? {} : { receiptFile: raw.receiptFile }) };
+  // The receipt file name is built by the lab (a time stamp and a revision, no caller text), so it is kept intact; the
+  // directory above it is scrubbed like any other printed text, because the caller chose it.
+  const scrubbed = scrubValue(raw);
+  if (typeof raw.receiptFile !== "string") return scrubbed;
+  // The separator is kept outside the scrub: a value run in the directory would otherwise swallow it.
+  const cut = Math.max(raw.receiptFile.lastIndexOf("/"), raw.receiptFile.lastIndexOf("\\"));
+  if (cut < 0) return { ...scrubbed, receiptFile: raw.receiptFile };
+  return { ...scrubbed, receiptFile: `${redactSecrets(raw.receiptFile.slice(0, cut))}${raw.receiptFile.slice(cut)}` };
 }
 
 export function formatStatus(raw) {
