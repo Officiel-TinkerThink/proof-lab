@@ -141,8 +141,9 @@ export async function statusOf({ dir, key, specPath, maxAttempts = DEFAULT_MAX_A
   return answer("PASS", { ...common, advice });
 }
 
-// The name chain.js writes for a receipt: `${fileStamp(at)}-${revision or "unknown"}.json`. Only this shape is kept intact.
-const LAB_RECEIPT_NAME = /^[0-9T-]+Z-(?:[0-9a-f]{12}|unknown)\.json$/;
+// The name chain.js writes for a receipt: `${fileStamp(fixedStamp(at))}-${revision or "unknown"}.json`, where fixedStamp
+// gives nine fractional digits. Only this exact shape is kept intact.
+const LAB_RECEIPT_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{9}Z-(?:[0-9a-f]{12}|unknown)\.json$/;
 
 // Scrubbed here, so every caller (status, doctor) prints safe text whichever field later holds app-supplied text.
 export function scrubStatus(raw) {
@@ -151,16 +152,19 @@ export function scrubStatus(raw) {
   return { ...scrubbed, receiptFile: scrubReceiptFile(raw.receiptFile) };
 }
 
-// The directory is scrubbed like any other printed text, because the caller chose it. The name is kept only when it has
-// the lab's own shape; a renamed file is scrubbed too. The separator is kept outside both scrubs, so a value run in the
-// directory cannot swallow it.
+// A name the lab did not write (renamed, or hand-placed) is scrubbed together with the whole path, because a run joined
+// by "/" is judged as a whole. Only a lab-shaped name is kept intact; then the directory above it is scrubbed alone, and
+// the separator stays outside that scrub so a value run in the directory cannot swallow it.
 function scrubReceiptFile(path) {
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  const dir = cut < 0 ? "" : path.slice(0, cut);
-  const sep = cut < 0 ? "" : path.slice(cut, cut + 1);
-  const name = path.slice(cut + 1);
-  const shownName = LAB_RECEIPT_NAME.test(name) ? name : redactSecrets(name);
-  return `${dir === "" ? "" : redactSecrets(dir)}${sep}${shownName}`;
+  // A bare drive letter ("D:name.json") ends the directory part at the colon.
+  const nameStart = Math.max(cut + 1, /^[A-Za-z]:/.test(path) ? 2 : 0);
+  const name = path.slice(nameStart);
+  if (!LAB_RECEIPT_NAME.test(name)) return redactSecrets(path);
+  const head = path.slice(0, nameStart);
+  const sep = /[\\/]$/.test(head) ? head.slice(-1) : "";
+  const dir = head.slice(0, head.length - sep.length);
+  return `${dir === "" ? "" : redactSecrets(dir)}${sep}${name}`;
 }
 
 export function formatStatus(raw) {

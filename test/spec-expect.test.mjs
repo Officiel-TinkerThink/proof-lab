@@ -837,6 +837,15 @@ test("scrubStatus: a renamed receipt file is scrubbed; only the lab's own name s
   const renamed = scrubStatus({ receiptFile: "D:/receipts/token=hunter2.json" });
   assert.equal(renamed.receiptFile.includes("hunter2"), false);
   assert.equal(renamed.receiptFile.startsWith("D:/receipts/"), true);
+  // a run joined by "/" is judged whole: a long non-lab name in a long directory is hidden, not split and passed through
+  const joined = scrubStatus({ receiptFile: "D:/receipts/Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr/St0Uv1Wx2Yz3Ab4Cd5Ef6Gh.json" });
+  assert.equal(joined.receiptFile.includes("St0Uv1"), false);
+  // the lab's shape is exact: a 32-digit stamp is not the lab's name and its hex run is redacted
+  const longStamp = scrubStatus({ receiptFile: "D:/receipts/000000000000000000000000000000000Z-unknown.json" });
+  assert.equal(longStamp.receiptFile.includes("000000000000000000000000000000000Z"), false);
+  // a bare drive letter with a lab name keeps the name intact
+  const bare = scrubStatus({ receiptFile: "D:2026-10-19T10-00-00-000000000Z-0123456789ab.json" });
+  assert.equal(bare.receiptFile, "D:2026-10-19T10-00-00-000000000Z-0123456789ab.json");
 });
 
 test("redactSecrets: a quote inside a quoted address query stays in the query when a letter follows it", () => {
