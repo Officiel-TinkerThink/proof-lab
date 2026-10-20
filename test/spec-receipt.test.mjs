@@ -385,6 +385,10 @@ test("safeLine builds a system error's line from its fields, and names only the 
   assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/y.json"), { code: "token=hunter2" })).includes("hunter2"), false);
   const badCode = Object.assign(systemError("ENOENT", "open", "/x/y.json"), { code: "token=hunter2" });
   assert.equal(safeLine(badCode), `<code>: ${getSystemErrorMessage(badCode.errno)}, open '<path>'`);
+  const longCode = Object.assign(systemError("ENOENT", "open", "/x/y.json"), { code: `A${"B".repeat(40)}` });
+  assert.equal(safeLine(longCode), `<code>: ${getSystemErrorMessage(longCode.errno)}, open '<path>'`, "a bare word too long for a code is not printed");
+  const longCall = Object.assign(systemError("ENOENT", "open", "/x/y.json"), { syscall: `${"a".repeat(21)}` });
+  assert.equal(safeLine(longCall), `${gone}, <call> '<path>'`, "a call too long for a call is not printed");
 
   // everything else is free text: only the pattern scrub applies
   assert.equal(safeLine(new Error("plain message")), "plain message");

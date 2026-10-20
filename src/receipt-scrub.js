@@ -51,8 +51,9 @@ const isLabName = name => LAB_FILE_NAME.test(name) || name === LOCK_NAME || STAL
 const shownPath = path => (isLabName(path.slice(nameStart(path))) ? scrubReceiptFile(path) : "<path>");
 // The code and the call are printed only in the shapes Node writes them (ENOENT, ERR_FS_EISDIR; open, spawn). Any other text
 // there is shown as a placeholder: an allow-list, not a pattern, so a value from a dependency cannot put a path in the line.
-const CODE_SHAPE = /^[A-Z][A-Z0-9_]*$/;
-const CALL_SHAPE = /^[a-z][a-z0-9_]*$/;
+// The length bound is what keeps a bare word from a dependency's error from passing as a code or a call.
+const CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,39}$/;
+const CALL_SHAPE = /^[a-z][a-z0-9_]{0,19}$/;
 
 // What safeLine returns when it cannot read the error at all. Exported so a test can tell it from a real line.
 export const UNREADABLE_ERROR = "an error whose text could not be read";
