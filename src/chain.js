@@ -153,7 +153,14 @@ export async function writeAtomic(path, data) {
     await rename(tmp, path);
     // rename(2) is not durable until the directory entry is flushed (fsync(2)). Windows cannot open a directory to
     // sync it, so there the rename is not flushed by this code; that gap is recorded as unresolved.
-    if (process.platform !== "win32") await syncDir(dirname(path));
+    if (process.platform !== "win32") {
+      // A rename the directory does not confirm is a failed write: the file goes, so a caller that reports a failure
+      // leaves nothing behind (the target is a new, uniquely named file, so nothing older is lost).
+      await syncDir(dirname(path)).catch(async error => {
+        await rm(path, { force: true }).catch(() => {});
+        throw error;
+      });
+    }
   } catch (error) {
     await handle.close().catch(() => {});
     await rm(tmp, { force: true });

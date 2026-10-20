@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_EVIDENCE_BYTES, isEvidenceName, receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { runCli } from "./cli.js";
-import { fromPrinted, scrubReceiptFile } from "./receipt-scrub.js";
+import { fromPrinted, scrubReceiptFile, scrubText } from "./receipt-scrub.js";
 import { redactSecrets } from "./spec/evidence.js";
 import { isMainModule, parseCli } from "./spec/util.js";
 
@@ -29,7 +29,7 @@ export async function loadEvidence({ dir, receipt: which = "latest", key }) {
   const notes = [];
   if (key) {
     const result = await verifyChain(dir, key);
-    if (result.problems.length > 0) throw new Error(`the receipt chain does not verify, so nothing can be trusted: ${result.problems.join("; ")}`);
+    if (result.problems.length > 0) throw new Error(`the receipt chain does not verify, so nothing can be trusted: ${result.problems.map(scrubText).join("; ")}`);
   } else {
     notes.push("The receipt signature was not checked: pass --key-file to verify the chain.");
   }
@@ -76,8 +76,9 @@ export function render(section, { receipt, records, path }) {
         lines.push(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge${receipt.review.total > receipt.review.items.length ? ` (${receipt.review.items.length} listed)` : ""}`);
         for (const item of receipt.review.items) lines.push(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
       }
-      if (receipt.error) lines.push(`  error: ${receipt.error}`);
-      for (const line of receipt.next ?? []) lines.push(`  -> ${line}`);
+      // The stored error and next lines are free text: a receipt written before a fix can still hold a path in them.
+      if (receipt.error) lines.push(`  error: ${scrubText(receipt.error)}`);
+      for (const line of receipt.next ?? []) lines.push(`  -> ${scrubText(line)}`);
       // A receipt written before the picture was stored by name holds the full path of the picture: scrub it on the way out.
       return { text: lines.join("\n"), data: typeof receipt.screenshot === "string" ? { ...receipt, screenshot: scrubReceiptFile(receipt.screenshot) } : receipt };
     }

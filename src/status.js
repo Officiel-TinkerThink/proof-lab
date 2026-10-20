@@ -12,7 +12,7 @@ import { receiptFiles, signingKeyFromFile, verifyChain } from "./chain.js";
 import { createFixtureHandler } from "./fixtures.js";
 import { render, revisionOf } from "./server.js";
 import { runCli } from "./cli.js";
-import { safeLine, scrubReceiptFile } from "./receipt-scrub.js";
+import { safeLine, scrubReceiptFile, scrubText } from "./receipt-scrub.js";
 import { redactSecrets, scrubValue, specLabel } from "./spec/evidence.js";
 import { validateSpec } from "./spec/schema.js";
 import { isMainModule, parseCli } from "./spec/util.js";
@@ -158,7 +158,7 @@ export function formatStatus(raw) {
   if (result.totals) lines.push(`  ${result.totals.checks} checks, ${result.totals.passed} passed, ${result.totals.failed} failed`);
   for (const check of result.failedChecks ?? []) lines.push(`  FAIL step ${check.step}: ${check.name}`);
   for (const item of result.review?.items ?? []) lines.push(`  REVIEW step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
-  for (const problem of result.problems ?? []) lines.push(`  problem: ${problem}`);
+  for (const problem of result.problems ?? []) lines.push(`  problem: ${scrubText(problem)}`);
   for (const line of result.advice ?? []) lines.push(`  -> ${line}`);
   return lines.join("\n");
 }

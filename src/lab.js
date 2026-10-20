@@ -3,6 +3,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCli } from "./cli.js";
+import { scrubText } from "./receipt-scrub.js";
 import { isMainModule } from "./spec/util.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,7 +29,7 @@ export async function main(args) {
     return name === undefined ? 2 : 0;
   }
   if (!Object.hasOwn(COMMANDS, name)) {
-    console.error(`unknown command "${name}"\n${usage()}`);
+    console.error(`unknown command "${scrubText(name)}"\n${usage()}`); // the typed word is not trusted to be harmless: it is scrubbed like any text
     return 2;
   }
   const command = COMMANDS[name];

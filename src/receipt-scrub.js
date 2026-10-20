@@ -58,6 +58,11 @@ const CALL_SHAPE = /^[a-z][a-z0-9_]{0,19}$/;
 // What safeLine returns when it cannot read the error at all. Exported so a test can tell it from a real line.
 export const UNREADABLE_ERROR = "an error whose text could not be read";
 
+// Free text the lab prints that may hold a path (a spec read error, a stored message, a verify problem): every path in it
+// becomes <path>, then the pattern scrub runs. A path is a drive path, or two or more separator-led segments.
+const PATH_IN_TEXT = /[A-Za-z]:[\\/]\S+|(?:[\\/][^\s\\/'"]+){2,}[\\/]?/g;
+export const scrubText = text => redactSecrets(String(text).replace(PATH_IN_TEXT, "<path>"));
+
 // The first line of an error, for a command to print. Any error line a command prints goes through this, never through
 // firstLine alone, and it never throws (it runs inside the handler that reports an error).
 //
@@ -86,7 +91,7 @@ export function safeLine(error) {
       const quoted = [path, dest].filter(named => named !== "").map(named => `'${shownPath(named)}'`);
       return firstLine(`${reason === undefined ? code : `${code}: ${reason}`}, ${call} ${quoted.join(" -> ")}${left}`);
     }
-    return `${redactSecrets(firstLine(error))}${left}`;
+    return `${scrubText(firstLine(error))}${left}`;
   } catch {
     return UNREADABLE_ERROR;
   }

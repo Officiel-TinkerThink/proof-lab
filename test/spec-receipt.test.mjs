@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getSystemErrorMap, getSystemErrorMessage } from "node:util";
 import { runSpec } from "../src/run-spec.js";
-import { UNREADABLE_ERROR, fromPrinted, safeLine, scrubReceipt, writeScrubbedReceipt } from "../src/receipt-scrub.js";
+import { UNREADABLE_ERROR, fromPrinted, safeLine, scrubReceipt, scrubText, writeScrubbedReceipt } from "../src/receipt-scrub.js";
 import { LAB_FILE_NAME, fixedStamp, verifyChain } from "../src/chain.js";
 import { KEY, TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
@@ -18,6 +18,14 @@ const FIELD_ORDER = ["verdict", "app", "bug", "spec", "revision", "at", "totals"
 const records = async path => (await readFile(path, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line));
 const ofType = (all, type) => all.filter(record => record.type === type);
 const waitlist = async extra => ({ ...JSON.parse(await readFile(WAITLIST, "utf8")), ...extra });
+
+test("free text: a path in a stored or verify message becomes <path>, a secret value is still masked", () => {
+  assert.equal(scrubText("cannot read /x/work/spec.json now"), "cannot read <path> now");
+  assert.equal(scrubText("D:\\work\\receipts\\x.json is bad"), "<path> is bad");
+  assert.equal(scrubText("file is not the receipt this driver writes"), "file is not the receipt this driver writes");
+  assert.equal(scrubText("bad and/or unclear"), "bad and/or unclear", "a single separator inside a word is not a path");
+  assert.equal(scrubText("token=hunter2 in the step").includes("hunter2"), false);
+});
 
 test("a passing run: the receipt is a small summary, the evidence holds the detail, both verify", TIMEOUT, async () => {
   await withRun(await waitlist(), async (receipt, dir) => {

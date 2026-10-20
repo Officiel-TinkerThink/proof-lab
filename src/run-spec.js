@@ -15,7 +15,7 @@ import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
 import { runCli } from "./cli.js";
-import { safeLine, scrubReceipt, scrubReceiptFile, writeScrubbedReceipt } from "./receipt-scrub.js";
+import { safeLine, scrubReceipt, scrubReceiptFile, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
@@ -162,7 +162,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     totals: null, checks: [], review: { total: 0, items: [] }, evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
   };
   const refuse = raw => {
-    const message = redactSecrets(raw);
+    const message = scrubText(raw);
     receipt.error = message;
     receipt.next = [message, "Fix the spec file and run again. Nothing was written."];
     return receipt;

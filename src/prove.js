@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { runCli } from "./cli.js";
-import { safeLine, scrubReceipt, writeScrubbedReceipt } from "./receipt-scrub.js";
+import { safeLine, scrubReceipt, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { isMainModule } from "./spec/util.js";
 import { startApp } from "./server.js";
 import {
@@ -163,7 +163,7 @@ export async function verifyReceipts({ receiptsDir = DEFAULT_RECEIPTS, key, expe
   if (expectHead && head !== expectHead) {
     problems.push("head does not match --expect-head: receipts were added or removed since that head was recorded");
   }
-  problems.forEach(problem => console.log(problem));
+  problems.forEach(problem => console.log(scrubText(problem)));
   if (problems.length > 0) {
     console.log(`INVALID: ${problems.length} problem(s), ${result.checked} receipts checked`);
     return 1;
