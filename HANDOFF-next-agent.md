@@ -8,7 +8,7 @@ Read first: `HANDOFF.md` (state and history), `SPECS.md` lines 176-181 (the reda
 
 - Head: `c501fc3` (handoff note). Code head: `d8bd36c`.
 - **Last reviewed head: `1954c8f`.** `d8bd36c` has NO review. The five-cycle review cap was reached, so the run is "not done" until `d8bd36c` (and whatever you change) is reviewed.
-- Gates on `d8bd36c`: `node --test test/*.test.mjs` gives 234 tests, 233 pass, 1 skipped (Windows symlink test), 0 fail. Run it in the background: it takes more than 120 s.
+- Gates on `d8bd36c`: `node --test test/*.test.mjs` gives 234 tests, 233 pass, 1 skipped (`a key file readable by group or others is refused`, `test/durability.test.mjs:39`: POSIX file modes, so it runs only on Linux and macOS), 0 fail. Run it in the background: it takes more than 120 s.
 - Demo: `node demo/run-demo.mjs` must show: PASS 0; FAIL 1 (two bugs); NEEDS-REVIEW exit 3; expectations PASS 0; ERROR 2 (invalid spec); ERROR 2 (no checks); chain VALID exit 0; tamper INVALID exit 1. Verified on `d8bd36c`.
 
 ## What `d8bd36c` changed (the code under review)
@@ -60,4 +60,18 @@ Read first: `HANDOFF.md` (state and history), `SPECS.md` lines 176-181 (the reda
 - Review cap: the owner confirmed the five-cycle cap (it is the one in the `review-fix-cycle` skill); the run used 4 of 5 cycles and ended clean.
 - S2.15 (`receipt.error`) is fixed at its root in `8c02e97`: text added to the receipt after `runSpec`'s one scrub point is now scrubbed where it is set, and the `screenshot` path right after `writeReceipt`. Its delta review (cycle 5 of 5) found nothing in scope, so the run is done. The reviewer found the same root cause in `prove` (`src/prove.js:129,144,202`, nothing scrubbed): recorded as S2.16, not fixed, because the cap was reached. Fixing it is a new piece of work with its own review run.
 - Still open: S2.16 (owner: fix `prove` too?). S2.14 needs no change unless asked. S2.15 (`receipt.error` printed unscrubbed) is in the backlog.
+- Nothing is pushed or merged; no remote.
+
+## Update 2026-10-20 (review run 3: the same root cause in every command; done)
+
+- Root cause found by an inventory of every print site: the signed receipt stored the picture's full path, every command ended with its own copy of an error block (3 of 7 scrubbed), `prove` scrubbed nothing, and `doctor`, `show` and `look` printed raw paths. Fixed at the sources, not per print site:
+  - `src/receipt-scrub.js`: `scrubReceipt` (the scrub point), `writeScrubbedReceipt` (write; refuses a receipt that was not scrubbed; scrubs the failed-write text), `scrubReceiptFile` (keeps only `LAB_FILE_NAME` intact). `run` and `prove` both use it.
+  - `src/chain.js`: stores the picture by name (like `evidence.file`); exports `LAB_FILE_NAME`, the one definition of the lab's file-name shape, built from the same pieces that build the names.
+  - `src/cli.js` `runCli` ends every command (`run`, `status`, `look`, `lab`, `show`, `doctor`, `prove`) with `ERROR: ` plus `safeLine` (`src/spec/evidence.js`), exit 2.
+  - `doctor` prints through `scrubDoctor`; `show` and `look` scrub their path lines; `show` scrubs an old receipt's full picture path on the way out.
+- Receipts written before this change still hold the picture's full path on disk (signed, not rewritten). `verifyChain` does not read the field.
+- Backlog: S2.15, S2.16, S2.17 are fixed. S2.14 is unchanged.
+- Commits: `8c02e97` (S2.15), `e3d44e3` and `cb5f330` (S2.16), `29343d6` (S2.17), `11a2974` (cycle 3 fixes). Review: cycles 1 to 4 of a run with a cap of 5; the last one (the defect review of `11a2974`) found nothing, so the run is done.
+- Gate: `node --test test/*.test.mjs` gives 241 tests, 240 pass, 1 skipped, 0 fail. New tests: `test/cli-output.test.mjs` (real commands, a credential-looking receipts directory), the name-shape and guard tests in `test/spec-receipt.test.mjs`, the `prove` test in `test/run.test.mjs`.
+- Convention to keep: a new command ends through `runCli`, writes receipts only through `scrubReceipt` + `writeScrubbedReceipt`, and prints paths through `scrubReceiptFile`. Nothing forces this except tests: add the command to `test/cli-output.test.mjs`.
 - Nothing is pushed or merged; no remote.
