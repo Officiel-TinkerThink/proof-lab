@@ -56,3 +56,14 @@ Annotations on file: `ann-20261019T165709055392-23d0aa` (noncompliant, high), `a
 - Symlink and key-file permission tests are skipped on Windows.
 - Screenshots can show on-screen credentials (documented, S3.1).
 - `chain.js` key id is an unsalted sha256 of the key (S3.2).
+
+## Close-out: cycle cap reached (not done)
+
+Date: 2026-10-20. Branch `feat/regression-tests`. Last commit `d8bd36c`.
+
+- Review cap: five review cycles, as agreed. This run is not done.
+- Unreviewed fixes (commit `d8bd36c`): exact lab name shape for `LAB_RECEIPT_NAME`; non-lab names scrubbed with the whole path (joined-run rule); bare drive letter with a lab name kept intact. Tests: 233 pass, 1 skipped, 0 fail. Demo rerun matches every variant.
+- Last reviewed head: `1954c8f` (defect and spec review found the two items fixed in `d8bd36c`).
+- Open, low: `run-spec.js:375` prints `receiptPath` unscrubbed in `run --json`. Not in the diff; not yet checked against the backlog.
+- Open, documented: directory over-hiding (S2.14); lab-name exemption deviates from spec line 181 literal wording (human decision: keep the exemption or scrub the name too).
+- Next step for the owner: decide whether to accept `d8bd36c` as is, or open a new run with a fresh cap to review it.
