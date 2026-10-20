@@ -3,7 +3,7 @@
 // Freshness of earlier receipts is reported as information; it does not make the setup unsound.
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { chromium } from "playwright";
@@ -49,7 +49,7 @@ async function checkWritable(dir) {
     const probe = join(dir, `.doctor-${process.pid}-${randomBytes(4).toString("hex")}.tmp`);
     await writeFile(probe, "ok");
     await rm(probe, { force: true });
-    return ok("receipts directory is writable", dir);
+    return ok("receipts directory is writable", "a new file can be created and removed there"); // the directory itself is not printed
   });
 }
 
@@ -96,7 +96,9 @@ async function checkBrowser() {
 }
 
 async function checkSpec(specPath) {
-  const name = `spec ${specPath}`;
+  // The directory the operator chose is not printed: the file name says which spec this is.
+  const label = basename(specPath);
+  const name = `spec ${label}`;
   let spec;
   try {
     spec = JSON.parse(await readFile(specPath, "utf8"));
@@ -106,16 +108,16 @@ async function checkSpec(specPath) {
   const problems = validateSpec(spec);
   if (problems.length > 0) return [bad(name, `invalid: ${problems.join("; ")}`)];
   const results = [ok(name, `valid (${spec.steps.length} steps)`)];
-  results.push(await attempt(`app for ${specPath} is reachable`, async () => {
+  results.push(await attempt(`app for ${label} is reachable`, async () => {
     const start = spec.app?.start ?? "/";
     if (spec.app?.url) {
       const response = await fetch(new URL(start, spec.app.url).href, { signal: AbortSignal.timeout(8000), redirect: "follow" });
-      return response.status < 500 ? ok(`app for ${specPath} is reachable`, `${spec.app.url} answered ${response.status}`) : bad(`app for ${specPath} is reachable`, `${spec.app.url} answered ${response.status}`);
+      return response.status < 500 ? ok(`app for ${label} is reachable`, `${spec.app.url} answered ${response.status}`) : bad(`app for ${label} is reachable`, `${spec.app.url} answered ${response.status}`);
     }
     const server = await startApp({ bug: spec.app?.bug });
     try {
       const response = await fetch(new URL(start, server.url).href, { signal: AbortSignal.timeout(5000), redirect: "follow" });
-      return response.status === 200 ? ok(`app for ${specPath} is reachable`, "the built-in app answered 200") : bad(`app for ${specPath} is reachable`, `the built-in app answered ${response.status} for ${start}`);
+      return response.status === 200 ? ok(`app for ${label} is reachable`, "the built-in app answered 200") : bad(`app for ${label} is reachable`, `the built-in app answered ${response.status} for ${start}`);
     } finally {
       await server.close().catch(() => {});
     }

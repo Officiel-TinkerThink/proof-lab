@@ -33,17 +33,15 @@ export async function writeScrubbedReceipt(receipt, options, advice) {
   }
 }
 
-// A name the lab did not write (renamed, or hand-placed) is scrubbed together with the whole path, because a run joined
-// by "/" is judged as a whole. Only a lab-shaped name is kept intact; then the directory above it is scrubbed alone, and
-// the separator stays outside that scrub so a value run in the directory cannot swallow it.
+// How a printed path is shown: the directory is never printed, whatever it holds. The operator chose it, so the operator
+// already knows it, and guessing whether a folder name looks like a secret has no end (it hides harmless names and misses
+// others). What is left is the file name: the lab's own shape is kept intact, any other name is scrubbed like free text.
+export const DIR_PLACEHOLDER = "<dir>/";
 export function scrubReceiptFile(path) {
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   // A bare drive letter ("D:name.json") ends the directory part at the colon.
   const nameStart = Math.max(cut + 1, /^[A-Za-z]:/.test(path) ? 2 : 0);
   const name = path.slice(nameStart);
-  if (!LAB_FILE_NAME.test(name)) return redactSecrets(path); // only the exact shape chain.js writes is kept intact
-  const head = path.slice(0, nameStart);
-  const sep = /[\\/]$/.test(head) ? head.slice(-1) : "";
-  const dir = head.slice(0, head.length - sep.length);
-  return `${dir === "" ? "" : redactSecrets(dir)}${sep}${name}`;
+  const shown = LAB_FILE_NAME.test(name) ? name : redactSecrets(name); // only the exact shape chain.js writes is kept as it is
+  return nameStart === 0 ? shown : `${DIR_PLACEHOLDER}${shown}`; // a bare name has no directory to hide
 }

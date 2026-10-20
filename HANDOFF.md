@@ -64,6 +64,4 @@ Date: 2026-10-20. Branch `feat/regression-tests`. Last commit `d8bd36c`.
 - Review cap: five review cycles, as agreed. This run is not done.
 - Unreviewed fixes (commit `d8bd36c`): exact lab name shape for `LAB_RECEIPT_NAME`; non-lab names scrubbed with the whole path (joined-run rule); bare drive letter with a lab name kept intact. Tests: 233 pass, 1 skipped, 0 fail. Demo rerun matches every variant.
 - Last reviewed head: `1954c8f` (defect and spec review found the two items fixed in `d8bd36c`).
-- Open, low: `run-spec.js:375` prints `receiptPath` unscrubbed in `run --json`. Not in the diff; not yet checked against the backlog.
-- Open, documented: directory over-hiding (S2.14); lab-name exemption deviates from spec line 181 literal wording (human decision: keep the exemption or scrub the name too).
-- Next step for the owner: decide whether to accept `d8bd36c` as is, or open a new run with a fresh cap to review it.
+- (Closed later the same day, see `HANDOFF-next-agent.md`: the `run --json` receipt path leak, S2.14 and the lab-name exemption decision are all resolved; `d8bd36c` was reviewed in a fresh run.)

@@ -27,9 +27,12 @@ async function workspace() {
 }
 
 const leaks = result => `${result.stdout}${result.stderr}`.includes("hunter2");
+// Stricter, for the paths the lab prints itself: not even the harmless part of the directory (the temp folder above it) appears.
+const showsDirectory = result => leaks(result) || `${result.stdout}${result.stderr}`.includes("proof-output-");
 
 test("show, status and doctor print a receipt from a credential-looking directory without that directory", TIMEOUT, async () => {
   const { dir, keyFile, receipts } = await workspace();
+  const leaks = showsDirectory; // in this test, any trace of the directory counts as a leak
   try {
     await mkdir(receipts);
     const run = command("run-spec.js", ["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts]);

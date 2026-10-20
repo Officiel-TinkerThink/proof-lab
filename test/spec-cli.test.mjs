@@ -141,7 +141,9 @@ test("the CLI scrubs the receipt path in both the text and the --json output", T
     assert.equal(parsed.receiptFile.includes("hunter2"), false, parsed.receiptFile);
     // Every path the --json output carries is scrubbed, not only receiptFile (writeReceipt also stores the screenshot path).
     assert.match(parsed.screenshot ?? "", /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.png$/, "the receipt holds the picture's file name, not its path");
-    assert.match(parsed.evidenceFile, /[\\/]\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.evidence\.jsonl$/, "the evidence path is scrubbed but keeps the file name");
+    assert.match(parsed.evidenceFile, /^<dir>\/\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.evidence\.jsonl$/, "the evidence path shows no directory and keeps the file name");
+    assert.match(parsed.receiptFile, /^<dir>\/\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.json$/, "the receipt path shows no directory and keeps the file name");
+    assert.match(text.stdout, /^  receipt:  <dir>\/\d{4}.*\.json$/m);
     assert.equal(json.stdout.includes("hunter2"), false, "no raw receipts directory anywhere in the --json output");
     assert.match(text.stdout, /evidence: .*\.evidence\.jsonl/);
     assert.equal(text.stdout.includes("hunter2"), false, "no raw receipts directory anywhere in the text output");

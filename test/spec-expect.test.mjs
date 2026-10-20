@@ -820,39 +820,44 @@ test("redactSecrets: text after a quoted address is kept; an unclosed quote hide
   assert.equal(redactSecrets('"https://h/x?a="b"'), '"https://h/x?[query hidden]"');
 });
 
-test("scrubStatus: the receipt path is kept, other fields are scrubbed", async () => {
+test("scrubStatus: the directory of a receipt path is never printed, the lab's file name is kept, other fields are scrubbed", async () => {
   const { scrubStatus } = await import("../src/status.js");
   const name = "2026-10-19T10-00-00-000000000Z-0123456789ab.json";
   const shown = scrubStatus({ receiptFile: `D:/receipts/${name}`, advice: ["password=hunter2 next"] });
-  assert.equal(shown.receiptFile, `D:/receipts/${name}`);
+  assert.equal(shown.receiptFile, `<dir>/${name}`);
   assert.equal(shown.advice[0].includes("hunter2"), false);
-  // a credential-shaped directory is scrubbed; the file name the lab wrote stays intact
-  const hidden = scrubStatus({ receiptFile: `D:/runs/password=hunter2/${name}` });
-  assert.equal(hidden.receiptFile.includes("hunter2"), false);
-  assert.equal(hidden.receiptFile.endsWith(`/${name}`), true);
+  // whatever the directory holds, it is not printed: not a credential-shaped one, and not a long harmless one either
+  // (a long mixed-case folder name used to print as [redacted long value], S2.14)
+  for (const dir of ["D:/runs/password=hunter2", "D:\\work\\Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8QrStUvWx9Yz0Ab1Cd2Ef3", "/home/runner2/work/ProofLab/ProofLab/receipts"]) {
+    assert.equal(scrubStatus({ receiptFile: `${dir}${dir.includes("\\") ? "\\" : "/"}${name}` }).receiptFile, `<dir>/${name}`);
+  }
 });
 
-test("scrubStatus: a renamed receipt file is scrubbed; only the lab's own name shape is kept", async () => {
+test("scrubStatus: a renamed receipt file keeps no directory and has its name scrubbed; only the lab's own name shape is kept", async () => {
   const { scrubStatus } = await import("../src/status.js");
   const renamed = scrubStatus({ receiptFile: "D:/receipts/token=hunter2.json" });
   assert.equal(renamed.receiptFile.includes("hunter2"), false);
-  assert.equal(renamed.receiptFile.startsWith("D:/receipts/"), true);
-  // a run joined by "/" is judged whole: a long non-lab name in a long directory is hidden, not split and passed through
-  const joined = scrubStatus({ receiptFile: "D:/receipts/Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr/St0Uv1Wx2Yz3Ab4Cd5Ef6Gh.json" });
-  assert.equal(joined.receiptFile.includes("St0Uv1"), false);
-  // the lab's shape is exact: a 32-digit stamp is not the lab's name and its hex run is redacted
+  assert.equal(renamed.receiptFile.startsWith("<dir>/"), true);
+  // a long non-lab name is hidden
+  const longName = scrubStatus({ receiptFile: "D:/receipts/St0Uv1Wx2Yz3Ab4Cd5Ef6Gh7Ij8Kl9Mn0Op1Qr2St3.json" });
+  assert.equal(longName.receiptFile.includes("St0Uv1"), false);
+  // the lab's shape is exact: a 33-digit stamp is not the lab's name and its run is redacted
   const longStamp = scrubStatus({ receiptFile: "D:/receipts/000000000000000000000000000000000Z-unknown.json" });
   assert.equal(longStamp.receiptFile.includes("000000000000000000000000000000000Z"), false);
-  // a bare drive letter with a lab name keeps the name intact
+  // a bare drive letter with a lab name: the directory part is still not printed
   const bare = scrubStatus({ receiptFile: "D:2026-10-19T10-00-00-000000000Z-0123456789ab.json" });
-  assert.equal(bare.receiptFile, "D:2026-10-19T10-00-00-000000000Z-0123456789ab.json");
+  assert.equal(bare.receiptFile, "<dir>/2026-10-19T10-00-00-000000000Z-0123456789ab.json");
+  // a name with no directory at all has nothing to hide
+  const noDir = scrubStatus({ receiptFile: "2026-10-19T10-00-00-000000000Z-0123456789ab.json" });
+  assert.equal(noDir.receiptFile, "2026-10-19T10-00-00-000000000Z-0123456789ab.json");
   // the picture and evidence files the lab writes under the same stem keep their names too; a foreign suffix does not
   for (const suffix of [".png", ".evidence.jsonl"]) {
     const sibling = scrubStatus({ receiptFile: `D:/receipts/2026-10-19T10-00-00-000000000Z-0123456789ab${suffix}` });
-    assert.equal(sibling.receiptFile, `D:/receipts/2026-10-19T10-00-00-000000000Z-0123456789ab${suffix}`);
+    assert.equal(sibling.receiptFile, `<dir>/2026-10-19T10-00-00-000000000Z-0123456789ab${suffix}`);
   }
   const foreign = scrubStatus({ receiptFile: "D:/receipts/token=hunter2/2026-10-19T10-00-00-000000000Z-0123456789ab.pdf" });
   assert.equal(foreign.receiptFile.includes("hunter2"), false);
+  assert.equal(foreign.receiptFile.startsWith("<dir>/"), true);
 });
 
 test("redactSecrets: a quote inside a quoted address query stays in the query when a letter follows it", () => {

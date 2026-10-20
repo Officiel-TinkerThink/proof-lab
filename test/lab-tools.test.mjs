@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixedStamp, receiptFiles, writeReceipt } from "../src/chain.js";
 import { formatDoctor, runDoctor } from "../src/doctor.js";
@@ -336,7 +336,7 @@ test("doctor: a sound setup is ok and reports where each spec stands", TIMEOUT, 
     assert.equal(result.ok, true, formatDoctor(result));
     assert.deepEqual(result.checks.map(check => check.name), [
       "node version", "signing key is not in the environment", "signing key file", "receipts directory is writable",
-      "receipt chain verifies", "no stuck writer lock", "browser launches", `spec ${WAITLIST}`, `app for ${WAITLIST} is reachable`,
+      "receipt chain verifies", "no stuck writer lock", "browser launches", `spec ${basename(WAITLIST)}`, `app for ${basename(WAITLIST)} is reachable`,
     ]);
     assert.match(result.checks.find(check => check.name === "browser launches").detail, /^chromium /);
     assert.equal(result.statuses[0].state, "NO-RECEIPT");
@@ -371,7 +371,8 @@ test("doctor: every setup problem is reported by name", TIMEOUT, async () => {
     const unreachable = join(dir, "unreachable.json");
     await writeFile(unreachable, JSON.stringify({ name: "gone", app: { url: "http://127.0.0.1:1/" }, steps: [{ op: "assertUrl", contains: "x" }] }));
     const specs = await runDoctor({ dir: receipts, keyFile, specPaths: [invalid, unreachable, join(dir, "missing.json")] });
-    assert.deepEqual(failedNames(specs), [`spec ${invalid}`, `app for ${unreachable} is reachable`, `spec ${join(dir, "missing.json")}`]);
+    // A check is named by the spec's file name: the directory the operator chose is not printed.
+    assert.deepEqual(failedNames(specs), [`spec ${basename(invalid)}`, `app for ${basename(unreachable)} is reachable`, "spec missing.json"]);
     assert.match(formatDoctor(specs), /The setup is not sound\. Fix the failed checks above, do not guess\./);
   });
 });
