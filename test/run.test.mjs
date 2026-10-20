@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,30 @@ test("unreachable app gives ERROR (can't tell) with exit 2, not FAIL", async () 
   assert.equal(exit, 2);
   assert.equal(receipt.checks.length, 0);
   assert.match(receipt.error, /prove failed/);
+});
+
+// prove prints the whole receipt, so a receipts directory with a credential-looking segment must not appear in it: not in the
+// picture path writeReceipt stores, and not in the text of a failed write (the system's error names the path it failed on).
+test("the printed receipt does not carry a credential-looking receipts directory", async () => {
+  const base = await mkdtemp(join(tmpdir(), "proof-scrub-"));
+  const keyPath = await keyFileWith(TEST_KEY);
+  const env = { ...process.env };
+  delete env.PROOF_LAB_KEY;
+  const prove = receiptsDir => spawnSync(process.execPath, [PROVE, "--key-file", keyPath, "--receipts", receiptsDir], { encoding: "utf8", timeout: 120_000, env });
+
+  const good = join(base, "password=hunter2");
+  await mkdir(good);
+  const written = prove(good);
+  assert.equal(written.status, 0, written.stdout + written.stderr);
+  assert.match(JSON.parse(written.stdout).screenshot, /[\\/]\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{12}\.png$/, "the picture path keeps the file name");
+  assert.equal(written.stdout.includes("hunter2"), false, "the picture path must not carry the raw directory");
+
+  const notADirectory = join(base, "token=hunter2");
+  await writeFile(notADirectory, "a file where the receipts directory should be");
+  const failed = prove(notADirectory);
+  assert.equal(failed.status, 2, failed.stdout + failed.stderr);
+  assert.match(JSON.parse(failed.stdout).error, /^receipt write failed:/);
+  assert.equal(failed.stdout.includes("hunter2"), false, "the failed-write text must not carry the raw path");
 });
 
 test("missing key gives exit 2 and writes no receipt", async () => {

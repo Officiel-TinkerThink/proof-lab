@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { recordWriteFailure, scrubReceipt, scrubStoredPaths } from "./receipt-scrub.js";
 import { startApp } from "./server.js";
 import {
   GENESIS,
@@ -136,14 +137,15 @@ export async function prove({ url, bug, receiptsDir = DEFAULT_RECEIPTS, key = si
     receipt.next = [receipt.error ?? "Unknown error.", "Can't tell is not the same as broken: run it again once the app is stable."];
   }
 
-  // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
+  // The same three steps as `run` (see receipt-scrub.js): scrub before the write, scrub what a failed write adds, and scrub
+  // the picture path writeReceipt stores. A receipt that cannot be written is not evidence: ERROR, never a silent PASS.
+  scrubReceipt(receipt);
   try {
     await writeReceipt(receipt, { shot, key, dir: receiptsDir });
   } catch (error) {
-    receipt.verdict = "ERROR";
-    receipt.error = `receipt write failed: ${firstLine(error)}`;
-    receipt.next = [receipt.error, "No receipt file was written, so this run is not evidence. Fix the receipts directory and run again."];
+    recordWriteFailure(receipt, error, "No receipt file was written, so this run is not evidence. Fix the receipts directory and run again.");
   }
+  scrubStoredPaths(receipt);
   return receipt;
 }
 

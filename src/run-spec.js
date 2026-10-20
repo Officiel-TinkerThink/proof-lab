@@ -14,6 +14,7 @@ import { describeTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
+import { recordWriteFailure, scrubReceipt, scrubStoredPaths } from "./receipt-scrub.js";
 import { scrubReceiptFile } from "./status.js";
 import { STEPS } from "./spec/steps.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
@@ -31,9 +32,7 @@ const MAX_PAGE_ERRORS_KEPT = 100;
 const MAX_FAILURE_CONTEXTS = 5;
 const MAX_REVISION_RECHECKS = 50;
 const ARIA_CHARS = 8000;
-// Fields that are the run's own bookkeeping, not page or spec text; the scrub at the end of runSpec leaves them alone.
-// "spec" is the run's identity (name scrubbed, hash appended by specLabel): scrubbing it again could swallow the hash.
-const RECEIPT_BOOKKEEPING = ["spec", "at", "verdict"];
+// Fields of an evidence record that are the run's own bookkeeping, not page or spec text (the receipt's are in receipt-scrub.js).
 const EVIDENCE_BOOKKEEPING = ["type", "spec", "at", "mime", "base64"];
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
@@ -320,8 +319,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
 
   // Choke point: the receipt and every evidence record are scrubbed here, once, whichever code path produced the text
   // (a step error, a hint, a review note, a context, a page-supplied revision). Redaction at the sources stays as a second layer.
-  if (typeof receipt.app === "string") receipt.app = hideQuery(receipt.app);
-  for (const key of Object.keys(receipt)) if (!RECEIPT_BOOKKEEPING.includes(key)) receipt[key] = scrubValue(receipt[key]);
+  scrubReceipt(receipt);
 
   const records = [
     { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
@@ -341,20 +339,15 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const asFiled = list => list.map(record => scrubRecord(record, EVIDENCE_BOOKKEEPING));
   const detail = { checks, steps: asFiled(stepRecords), contexts: asFiled(contextRecords), console: asFiled(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
-  // A receipt that cannot be written is not evidence: the run becomes ERROR, never a silent PASS.
+  // The steps after the scrub point (see receipt-scrub.js): what a failed write and writeReceipt add is scrubbed as well.
   try {
     const paths = await writeReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir });
     detail.receiptPath = paths.receiptPath;
     detail.evidencePath = paths.evidencePath;
   } catch (error) {
-    receipt.verdict = "ERROR";
-    // The system's error text names the path it failed on, and it arrives after the choke point above: scrub it here.
-    receipt.error = scrubValue(`receipt write failed: ${firstLine(error)}`);
-    receipt.next = [receipt.error, "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again."];
+    recordWriteFailure(receipt, error, "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again.");
   }
-  // writeReceipt stored the picture's path after the choke point as well. Scrub it too, so the receipt a caller gets in
-  // process, and every printout of it, is scrubbed like the files (detail keeps the real paths for callers).
-  if (typeof receipt.screenshot === "string") receipt.screenshot = scrubReceiptFile(receipt.screenshot);
+  scrubStoredPaths(receipt); // detail keeps the real paths for callers
   Object.defineProperty(receipt, "detail", { value: detail, enumerable: false });
   return receipt;
 }
