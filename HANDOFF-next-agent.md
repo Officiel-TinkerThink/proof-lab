@@ -57,5 +57,6 @@ Read first: `HANDOFF.md` (state and history), `SPECS.md` lines 176-181 (the reda
 - Review outcome: `d8bd36c` itself had no valid finding. A spec finding (directory scrubbed separately from a lab-shaped name) was refuted: it is the documented design. Backlog S2.15 added (`receipt.error` printed unscrubbed).
 - Gate: `node --test test/*.test.mjs` gives 235 tests, 234 pass, 1 skipped, 0 fail. `npm test` runs only `test/run.test.mjs` (8 tests); it is not the gate.
 - Owner decisions made 2026-10-20: keep the lab-name exemption (recorded in `SPECS.md` line 181) and scrub the evidence path too. Both are done in `03ff43f`. Its delta review (cycle 4) found one low wording issue: the `SPECS.md` sentence said the kept name holds nothing from the page, but the 12-hex revision comes from the app's `app-revision` meta tag. The wording is corrected in the commit after `03ff43f`.
-- Still open: the five-cycle cap for these review runs was the agent's choice, not the owner's (the first handoff asked the owner to decide): confirm or object. S2.14 needs no change unless asked. S2.15 (`receipt.error` printed unscrubbed) is in the backlog.
+- Review cap: the owner confirmed the five-cycle cap (it is the one in the `review-fix-cycle` skill); the run used 4 of 5 cycles and ended clean.
+- Still open: S2.14 needs no change unless asked. S2.15 (`receipt.error` printed unscrubbed) is in the backlog.
 - Nothing is pushed or merged; no remote.
