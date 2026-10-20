@@ -49,3 +49,12 @@ Read first: `HANDOFF.md` (state and history), `SPECS.md` lines 176-181 (the reda
 
 - `D:/core/projects/agent-kit` is a separate repo. Its review skill change is merged to `main` (PR #21, merge commit `4071a3b`).
 - Untracked `denyB.out` in agent-kit is not ours; leave it.
+
+## Update 2026-10-20 (review run 2: done)
+
+- Review of `d8bd36c` plus the receipt-path scrub ran as a fresh run with a five-cycle cap that the agent chose (the handoff said the owner should decide; confirm or object). It used 3 of 5 cycles and ended "done": the delta review of the last fix (`fc57da7`) found nothing.
+- Commits: `5540c6b` scrub the receipt path in `run --json` and `run` text; `ce03403` scrub the `screenshot` path in `--json`; `fc57da7` keep the lab's own `.png` and `.evidence.jsonl` names (the exact lab shape now has three suffixes).
+- Review outcome: `d8bd36c` itself had no valid finding. A spec finding (directory scrubbed separately from a lab-shaped name) was refuted: it is the documented design. Backlog S2.15 added (`receipt.error` printed unscrubbed).
+- Gate: `node --test test/*.test.mjs` gives 235 tests, 234 pass, 1 skipped, 0 fail. `npm test` runs only `test/run.test.mjs` (8 tests); it is not the gate.
+- Still open for the owner: (c) the lab-name exemption decision (recommendation unchanged: keep it, record the deviation); and whether `evidenceFile` / the `evidence:` line should be scrubbed too (printed raw today; the CLI test excludes it on purpose). S2.14 needs no change unless asked.
+- Nothing is pushed or merged; no remote.
