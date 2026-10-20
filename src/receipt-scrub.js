@@ -1,7 +1,7 @@
 // The one place that decides how a receipt is scrubbed and written. `run` (run-spec.js) and `prove` (prove.js) both go
 // through scrubReceipt and writeScrubbedReceipt, and writeScrubbedReceipt refuses a receipt that scrubReceipt has not seen,
 // so a new entry point cannot write one unscrubbed by forgetting a step.
-import { getSystemErrorMessage } from "node:util";
+import * as util from "node:util";
 import { LAB_FILE_NAME, writeReceipt } from "./chain.js";
 import { hideQuery, redactSecrets, scrubValue } from "./spec/evidence.js";
 import { firstLine } from "./spec/util.js";
@@ -41,22 +41,34 @@ const DIR_PLACEHOLDER = "<dir>/";
 const PLACEHOLDER_HEAD = DIR_PLACEHOLDER.slice(0, -1);
 export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /[\\/]/.test(printed[PLACEHOLDER_HEAD.length] ?? "") ? printed.slice(PLACEHOLDER_HEAD.length + 1) : printed);
 
+// System calls whose path is a directory: the last segment is a folder name the operator chose, not a file name.
+const DIRECTORY_CALLS = new Set(["mkdir", "rmdir", "scandir", "opendir", "mkdtemp"]);
+
 // The first line of an error, for a command to print. Any error line a command prints goes through this, never through
-// firstLine alone.
+// firstLine alone, and it never throws (it runs inside the handler that reports an error).
 //
 // A system error that names a path (code, syscall, errno, path, dest) is not cleaned up: its line is built from those
-// fields, in the form Node writes it, with each path shown the way a printed path is. Its free-text message is never
-// printed, so nothing has to be found and replaced inside a string (which never ends: overlapping paths, `$&` in a name,
-// characters that mean something in a pattern). Every other error is free text and goes through the pattern scrub.
+// fields, in the form Node writes it, with each path shown the way a printed path is (a directory as `<dir>`, a file as
+// `<dir>/name`). Its free-text message is never printed, so nothing has to be found and replaced inside a string (which
+// never ends: overlapping paths, `$&` in a name, characters that mean something in a pattern). Every other error is free
+// text and goes through the pattern scrub. Files the writer could not remove are a field of the error (`leftovers`, bare
+// names the lab wrote), added here as a sentence of the lab's own.
 export function safeLine(error) {
-  const asText = value => (Buffer.isBuffer(value) ? value.toString() : typeof value === "string" ? value : "");
-  const [path, dest] = [asText(error?.path), asText(error?.dest)];
-  if (path !== "" && typeof error.code === "string" && typeof error.syscall === "string") {
-    const reason = typeof error.errno === "number" ? getSystemErrorMessage(error.errno) : undefined;
-    const quoted = [path, dest].filter(shown => shown !== "").map(shown => `'${scrubReceiptFile(shown)}'`);
-    return redactSecrets(firstLine(`${reason === undefined ? error.code : `${error.code}: ${reason}`}, ${error.syscall} ${quoted.join(" -> ")}`)); // a name with a line break stays one line
+  try {
+    const asText = value => (Buffer.isBuffer(value) ? value.toString() : typeof value === "string" ? value : "");
+    const left = Array.isArray(error?.leftovers) && error.leftovers.length > 0 ? `; could not remove ${error.leftovers.join(", ")}, so check the receipts directory` : "";
+    const [path, dest] = [asText(error?.path), asText(error?.dest)];
+    if (path !== "" && typeof error.code === "string" && typeof error.syscall === "string") {
+      const call = error.syscall.split(" ")[0]; // a spawn error's syscall is `spawn <file>`: the file is in path, shown as a path
+      // The description is Node's own table; older Node has no such function, and an unknown number must not stop the report.
+      const reason = typeof error.errno === "number" && error.errno < 0 ? util.getSystemErrorMessage?.(error.errno) : undefined;
+      const quoted = [DIRECTORY_CALLS.has(call) ? "<dir>" : scrubReceiptFile(path), ...(dest === "" ? [] : [scrubReceiptFile(dest)])].map(shown => `'${shown}'`);
+      return redactSecrets(firstLine(`${reason === undefined ? error.code : `${error.code}: ${reason}`}, ${call} ${quoted.join(" -> ")}${left}`)); // a name with a line break stays one line
+    }
+    return redactSecrets(firstLine(`${firstLine(error)}${left}`));
+  } catch {
+    return "an error whose text could not be read";
   }
-  return redactSecrets(firstLine(error));
 }
 
 // How a printed path is shown: the directory is never printed, whatever it holds. The operator chose it, so the operator

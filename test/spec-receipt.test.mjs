@@ -328,7 +328,7 @@ test("safeLine builds a system error's line from its fields, so no directory is 
   assert.equal(safeLine(opened), opened.message.split(opened.path).join("<dir>/x.json"));
   const moved = await rename(join(tmpdir(), "no-such-A1", "r.json"), join(tmpdir(), "no-such-B2", "r.json")).catch(caught => caught);
   assert.equal(safeLine(moved), "ENOENT: no such file or directory, rename '<dir>/r.json' -> '<dir>/r.json'");
-  assert.equal(safeLine(await mkdir(join(tmpdir(), "no-such-C3", "d", "e")).catch(caught => caught)), "ENOENT: no such file or directory, mkdir '<dir>/e'");
+  assert.equal(safeLine(await mkdir(join(tmpdir(), "no-such-C3", "d", "e")).catch(caught => caught)), "ENOENT: no such file or directory, mkdir '<dir>'");
   for (const line of [safeLine(opened), safeLine(moved)]) assert.equal(/no-such|[\/]tmp|Temp/i.test(line), false, line);
 
   // names that mean something to a string replace, a pattern or a line: nothing is searched, so none of them matters
@@ -341,6 +341,23 @@ test("safeLine builds a system error's line from its fields, so no directory is 
   assert.equal(safeLine(Object.assign(systemError("ENOENT", "open", "/x/work/y.json"), { path: Buffer.from("/x/work/y.json") })), "ENOENT: no such file or directory, open '<dir>/y.json'");
   assert.equal(safeLine(systemError("ENOENT", "open", "/x/work/a\nb.json")).includes("\n"), false, "one line, whatever the name holds");
 
+  // a directory call prints the directory as <dir> and no name: the last segment is a folder the operator chose
+  assert.equal(safeLine(systemError("ENOENT", "mkdir", "/x/work/Client-Acme-Study7")), "ENOENT: no such file or directory, mkdir '<dir>'");
+  assert.equal(safeLine(systemError("ENOENT", "scandir", "/x/work/Client-Acme-Study7")), "ENOENT: no such file or directory, scandir '<dir>'");
+  // a spawn error's syscall carries the program file: only the call is printed, the file is shown as a path
+  const spawned = Object.assign(systemError("ENOENT", "spawn /opt/Client-Acme/browser", "/opt/Client-Acme/browser"), { syscall: "spawn /opt/Client-Acme/browser" });
+  assert.equal(safeLine(spawned), "ENOENT: no such file or directory, spawn '<dir>/browser'");
+  // files the writer could not remove: a field of bare names, put into a sentence of the lab's own (system error or not)
+  const stuck = Object.assign(systemError("EPERM", "rename", "/x/work/a.json", "/x/work/b.json"), { leftovers: ["b.png", "b.evidence.jsonl"] });
+  assert.equal(safeLine(stuck), "EPERM: operation not permitted, rename '<dir>/a.json' -> '<dir>/b.json'; could not remove b.png, b.evidence.jsonl, so check the receipts directory");
+  assert.equal(safeLine(Object.assign(new Error("boom"), { leftovers: ["b.png"] })), "boom; could not remove b.png, so check the receipts directory");
+  // the error printer never throws, whatever the error holds
+  for (const bad of [Object.assign(systemError("ENOENT", "open", "/x/y.json"), { errno: 0 }), Object.assign(systemError("ENOENT", "open", "/x/y.json"), { errno: 5 }), Object.assign(systemError("ENOENT", "open", "/x/y.json"), { errno: NaN }), Object.assign(systemError("ENOENT", "open", "/x/y.json"), { errno: -999999 })]) {
+    assert.equal(typeof safeLine(bad), "string");
+    assert.equal(safeLine(bad).includes("/x/"), false);
+  }
+  const hostile = { get path() { throw new Error("getter"); } };
+  assert.equal(safeLine(hostile), "an error whose text could not be read");
   // everything else is free text: only the pattern scrub applies
   assert.equal(safeLine(new Error("plain message")), "plain message");
   assert.equal(safeLine("a string"), "a string");

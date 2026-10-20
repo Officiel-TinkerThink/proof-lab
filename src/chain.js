@@ -370,7 +370,9 @@ export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTime
         // Still inside the lock: until these files are gone, another writer could link to a receipt that is about to vanish.
         const leftovers = [];
         for (const path of written) if (!(await discard(path))) leftovers.push(path);
-        if (leftovers.length > 0) error.message = `${error.message}; could not remove ${leftovers.join(", ")}, so check the receipts directory`;
+        // The files this call could not remove, by name: a field of the error, so the message is not rewritten (the line a
+        // command prints is built from the error's fields, see safeLine) and no directory is put into any text.
+        if (leftovers.length > 0) error.leftovers = leftovers.map(path => basename(path));
         throw error;
       }
     });

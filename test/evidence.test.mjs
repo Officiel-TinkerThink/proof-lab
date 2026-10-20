@@ -191,7 +191,7 @@ test("a write that fails after signing rolls back inside the lock and leaves the
     const name = `${fileStamp(receipt.at)}-${REVISION}`;
     await mkdir(join(dir, `${name}.json`)); // the receipt cannot be renamed onto a directory
     await assert.rejects(writeReceipt(receipt, { shot: Buffer.from("png"), evidence: "E\n", key: KEY, dir }), error => {
-      assert.match(error.message, /^(?!.*could not remove)/s, "the png and the evidence were removed");
+      assert.equal(error.leftovers, undefined, "the png and the evidence were removed");
       return true;
     });
     for (const field of ["keyId", "prevHash", "hash", "mac"]) assert.equal(field in receipt, false, field);
@@ -205,7 +205,7 @@ test("a write that fails after signing rolls back inside the lock and leaves the
     await mkdir(join(dir, `${fileStamp(receipt.at)}-${REVISION}.png`)); // the picture cannot be renamed onto a directory
     // Nothing was created by this call, so nothing is removed: the directory that is in the way stays, and no leftover is reported.
     await assert.rejects(writeReceipt(receipt, { shot: Buffer.from("png"), key: KEY, dir }), error => {
-      assert.doesNotMatch(error.message, /could not remove/);
+      assert.equal(error.leftovers, undefined);
       return true;
     });
     assert.equal(receipt.screenshot, null);
