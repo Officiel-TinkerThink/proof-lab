@@ -373,7 +373,7 @@ export async function main(args) {
   const key = await signingKeyFromFile(values["key-file"]);
   const receipt = await runSpec({ specPath: values.spec, key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS });
   if (values.json) {
-    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ?? null }, null, 2));
+    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, screenshot: typeof receipt.screenshot === "string" ? scrubReceiptFile(receipt.screenshot) : receipt.screenshot, evidenceFile: receipt.detail?.evidencePath ?? null }, null, 2));
   } else {
     const totals = receipt.totals;
     console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());
