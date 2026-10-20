@@ -74,7 +74,8 @@ test("doctor and status on a first run (no receipt yet) print no directory", TIM
     // A spec that cannot be read: the system error names the spec's full path, and only its file name may appear.
     const missing = join(dir, "no-such-folder-Ab1Cd2", "missing.json");
     const unreadable = command("doctor.js", ["--key-file", keyFile, "--receipts", receipts, "--spec", missing]);
-    assert.match(unreadable.stdout, /spec missing\.json: cannot be read: .*<dir>\/missing\.json/, unreadable.stdout + unreadable.stderr);
+    // a file the operator named is not one the lab wrote: the error shows <path>, the check is named by the spec's file name
+    assert.match(unreadable.stdout, /spec missing\.json: cannot be read: ENOENT: no such file or directory, open '<path>'/, unreadable.stdout + unreadable.stderr);
     assert.equal(unreadable.stdout.includes("no-such-folder"), false, "doctor, unreadable spec");
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -2,7 +2,7 @@
 // through scrubReceipt and writeScrubbedReceipt, and writeScrubbedReceipt refuses a receipt that scrubReceipt has not seen,
 // so a new entry point cannot write one unscrubbed by forgetting a step.
 import * as util from "node:util";
-import { LAB_FILE_NAME, writeReceipt } from "./chain.js";
+import { LAB_FILE_NAME, LOCK_NAME, writeReceipt } from "./chain.js";
 import { hideQuery, redactSecrets, scrubValue } from "./spec/evidence.js";
 import { firstLine } from "./spec/util.js";
 
@@ -28,7 +28,7 @@ export async function writeScrubbedReceipt(receipt, options, advice) {
     return await writeReceipt(receipt, options);
   } catch (error) {
     receipt.verdict = "ERROR";
-    receipt.error = scrubValue(`receipt write failed: ${safeLine(error)}`);
+    receipt.error = `receipt write failed: ${safeLine(error)}`; // safe by construction: scrubbing it again would hide the lab's own file names
     receipt.next = [receipt.error, advice];
     return null;
   }
@@ -41,33 +41,45 @@ const DIR_PLACEHOLDER = "<dir>/";
 const PLACEHOLDER_HEAD = DIR_PLACEHOLDER.slice(0, -1);
 export const fromPrinted = printed => (printed.startsWith(PLACEHOLDER_HEAD) && /[\\/]/.test(printed[PLACEHOLDER_HEAD.length] ?? "") ? printed.slice(PLACEHOLDER_HEAD.length + 1) : printed);
 
-// System calls whose path is a directory: the last segment is a folder name the operator chose, not a file name.
-const DIRECTORY_CALLS = new Set(["mkdir", "rmdir", "scandir", "opendir", "mkdtemp"]);
+// A path in an error line: its name is printed only when the lab wrote that file (its receipt, picture or evidence name, or
+// its lock file). Any other path, a directory or a file the operator named, is `<path>`. An allow-list, because whether a
+// path is a directory cannot be told from the call that failed on it (stat, open and realpath take either), and a list of
+// directory calls would never be complete.
+const lastSegment = path => path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+const shownPath = path => (LAB_FILE_NAME.test(lastSegment(path)) || lastSegment(path) === LOCK_NAME ? scrubReceiptFile(path) : "<path>");
+
+// What safeLine returns when it cannot read the error at all. Exported so a test can tell it from a real line.
+export const UNREADABLE_ERROR = "an error whose text could not be read";
 
 // The first line of an error, for a command to print. Any error line a command prints goes through this, never through
 // firstLine alone, and it never throws (it runs inside the handler that reports an error).
 //
 // A system error that names a path (code, syscall, errno, path, dest) is not cleaned up: its line is built from those
-// fields, in the form Node writes it, with each path shown the way a printed path is (a directory as `<dir>`, a file as
-// `<dir>/name`). Its free-text message is never printed, so nothing has to be found and replaced inside a string (which
-// never ends: overlapping paths, `$&` in a name, characters that mean something in a pattern). Every other error is free
-// text and goes through the pattern scrub. Files the writer could not remove are a field of the error (`leftovers`, bare
-// names the lab wrote), added here as a sentence of the lab's own.
+// fields, in the form Node writes it, with each path shown by shownPath. Its free-text message is never printed, so
+// nothing has to be found and replaced inside a string (which never ends: overlapping paths, `$&` in a name, characters
+// that mean something in a pattern). Every other error is free text and goes through the pattern scrub. Files the writer
+// could not remove are a field of the error (`leftovers`, bare names the lab wrote), added here as a sentence of the lab's own.
 export function safeLine(error) {
   try {
     const asText = value => (Buffer.isBuffer(value) ? value.toString() : typeof value === "string" ? value : "");
-    const left = Array.isArray(error?.leftovers) && error.leftovers.length > 0 ? `; could not remove ${error.leftovers.join(", ")}, so check the receipts directory` : "";
+    // The lab's own sentence. Only names of the lab's own shape are listed; the pattern scrub is not run over it, because it
+    // would read a 43-character file name as a token and hide it.
+    const left = Array.isArray(error?.leftovers) && error.leftovers.length > 0
+      ? `; could not remove ${error.leftovers.map(name => (typeof name === "string" && LAB_FILE_NAME.test(name) ? name : "<path>")).join(", ")}, so check the receipts directory`
+      : "";
     const [path, dest] = [asText(error?.path), asText(error?.dest)];
     if (path !== "" && typeof error.code === "string" && typeof error.syscall === "string") {
-      const call = error.syscall.split(" ")[0]; // a spawn error's syscall is `spawn <file>`: the file is in path, shown as a path
+      // The line is composed of parts that are safe by construction: the code, Node's description, the call and the paths
+      // as shownPath gives them. The pattern scrub is applied to the two that come from the error, not to the whole line.
+      const call = redactSecrets(error.syscall.split(" ")[0]); // a spawn error's syscall is `spawn <file>`: the file is in path, shown as a path
       // The description is Node's own table; older Node has no such function, and an unknown number must not stop the report.
       const reason = typeof error.errno === "number" && error.errno < 0 ? util.getSystemErrorMessage?.(error.errno) : undefined;
-      const quoted = [DIRECTORY_CALLS.has(call) ? "<dir>" : scrubReceiptFile(path), ...(dest === "" ? [] : [scrubReceiptFile(dest)])].map(shown => `'${shown}'`);
-      return redactSecrets(firstLine(`${reason === undefined ? error.code : `${error.code}: ${reason}`}, ${call} ${quoted.join(" -> ")}${left}`)); // a name with a line break stays one line
+      const quoted = [path, dest].filter(named => named !== "").map(named => `'${shownPath(named)}'`);
+      return firstLine(`${reason === undefined ? redactSecrets(error.code) : `${redactSecrets(error.code)}: ${reason}`}, ${call} ${quoted.join(" -> ")}${left}`);
     }
-    return redactSecrets(firstLine(`${firstLine(error)}${left}`));
+    return `${redactSecrets(firstLine(error))}${left}`;
   } catch {
-    return "an error whose text could not be read";
+    return UNREADABLE_ERROR;
   }
 }
 
