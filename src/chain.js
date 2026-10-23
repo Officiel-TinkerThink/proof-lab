@@ -328,23 +328,27 @@ function processAlive(pid) {
 // Writes the receipt, and with it the screenshot (shot, a Buffer) and the evidence file (evidence, text) when given.
 // Returns { receiptPath, evidencePath }. Everything is written after the ordering check, inside the lock, so a refused
 // receipt never touches a file that belongs to an earlier run; on any failure every file this call wrote is removed.
-export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTimeoutMs = LOCK_TIMEOUT_MS }) {
+// With stampNow (a clock returning a fixedStamp), `at` is set inside the lock, as the receipt joins the chain, so runs
+// that overlap never refuse each other: whichever seals first comes first. Without it, `at` is kept as given.
+export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTimeoutMs = LOCK_TIMEOUT_MS, stampNow }) {
   assertStorable(receipt);
   if (evidence !== undefined && Buffer.byteLength(evidence, "utf8") > MAX_EVIDENCE_BYTES) {
     throw new Error(`the evidence is larger than ${MAX_EVIDENCE_BYTES} bytes; nothing was written`);
   }
   await mkdir(dir, { recursive: true });
-  const stamp = fileStamp(receipt.at);
   const rev = revisionOrUnknown(receipt.revision);
-  const newName = `${stamp}-${rev}${RECEIPT_SUFFIX}`;
-  const before = { screenshot: receipt.screenshot, evidence: receipt.evidence, keyId: receipt.keyId, prevHash: receipt.prevHash };
+  const before = { at: receipt.at, screenshot: receipt.screenshot, evidence: receipt.evidence, keyId: receipt.keyId, prevHash: receipt.prevHash };
   try {
     return await withChainLock(dir, lockTimeoutMs, async () => {
       // The head is the newest receipt by name, and verify reads names in that order. A new receipt must sort after
       // the head, or linking it would fork the chain. Refusing is the fail-closed choice; the run can be repeated.
       const existing = await receiptFiles(dir);
-      if (existing.length > 0 && basename(existing.at(-1)) >= newName) {
-        throw new Error(`receipt ${newName} is not later than the chain head ${basename(existing.at(-1))}; not written, so the chain does not fork`);
+      const head = existing.length > 0 ? basename(existing.at(-1)) : null;
+      if (stampNow) receipt.at = await sealStamp(head, rev, stampNow);
+      const stamp = fileStamp(receipt.at);
+      const newName = `${stamp}-${rev}${RECEIPT_SUFFIX}`;
+      if (head !== null && head >= newName) {
+        throw new Error(`receipt ${newName} is not later than the chain head ${head}; not written, so the chain does not fork`);
       }
       const written = [];
       try {
@@ -387,6 +391,7 @@ export async function writeReceipt(receipt, { shot, evidence, key, dir, lockTime
     });
   } catch (error) {
     // The caller keeps its object: put back what this call changed, and leave no chain fields on an unwritten receipt.
+    restoreField(receipt, "at", before.at);
     restoreField(receipt, "screenshot", before.screenshot);
     restoreField(receipt, "evidence", before.evidence);
     restoreField(receipt, "keyId", before.keyId);
@@ -409,6 +414,19 @@ function inStoredOrder(receipt) {
   const ordered = knownFieldsOnly(receipt);
   for (const key of Object.keys(receipt)) delete receipt[key];
   Object.assign(receipt, ordered);
+}
+
+// The clock's stamp, once it names a receipt that sorts after the head. Two seals in one millisecond give the same stamp,
+// so a head up to SEAL_WAIT_MS ahead is waited out (inside the lock, so no other writer moves the head meanwhile). A head
+// further ahead is a clock problem: the stamp is returned as it is and the ordering check refuses it.
+export const SEAL_WAIT_MS = 1000;
+async function sealStamp(head, rev, stampNow) {
+  const deadline = Date.now() + SEAL_WAIT_MS;
+  for (;;) {
+    const at = stampNow();
+    if (head === null || `${fileStamp(at)}-${rev}${RECEIPT_SUFFIX}` > head || Date.now() >= deadline) return at;
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
 }
 
 function restoreField(receipt, key, value) {

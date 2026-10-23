@@ -7,6 +7,7 @@ headless browser through it, records every check, and writes a signed **receipt*
 ```
 node src/doctor.js  --key-file <key> [--spec specs/x.json]      is the setup sound?        exit 0 / 2
 node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR / 3 PASS but needs review
+                     [--spec specs/y.json ...] [--jobs N]       several specs, concurrently (see "Many specs at once")
 node src/status.js  --spec specs/x.json --key-file <key>        can I say done?            exit 0 / 1 / 2 / 3
 node src/show.js    --key-file <key> [--failures|--steps|...]   what happened in detail?
 node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does the page offer a spec? (no receipt, no key)
@@ -16,6 +17,18 @@ node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does th
 
 The key is read from a file only (`--key-file`, mode 0600 on Linux and macOS, at least 32 bytes). `PROOF_LAB_KEY` in the
 environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or `PROOF_LAB_RECEIPTS` says otherwise.
+
+### Many specs at once
+
+`run` takes `--spec` more than once and runs the specs concurrently: at most half of the machine's workers
+(`os.availableParallelism()`, at least one) at a time. `--jobs N` lowers that; a higher number is cut to the half, with a
+note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
+that cannot be read, or a run that stops, is an ERROR for that spec only; the others go on. The results print in the order of
+the `--spec` flags (`--json` prints a list), then one line of totals. The exit code is 1 if any spec FAILed, else 2 if any
+was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exits exactly as before.
+
+Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
+the chain, inside the lock, so whichever run finishes first comes first and no run refuses another.
 
 ## The loop
 
@@ -200,7 +213,7 @@ A signed JSON file, `receipts/<stamp>-<revision>.json`, small on purpose:
 | Field | Meaning |
 |---|---|
 | `verdict` | `PASS` every check passed and there was at least one; `FAIL` one or more failed; `ERROR` the run could not tell |
-| `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when |
+| `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when the receipt joined the chain (the end of the run; the evidence's `run` record holds its start) |
 | `totals` | `{checks, passed, failed, omitted}`. `omitted` counts failed checks not listed below (the first 20 are listed). |
 | `checks` | **Failed checks only**: `{step, name, pass, expected, actual, hint?, error?}`, long values clipped to 200 characters |
 | `review` | `{total, items}`: claims from `review` steps that need a human (the first 20 as `{step, name, note?}`). Receipts from before this field have none. |
