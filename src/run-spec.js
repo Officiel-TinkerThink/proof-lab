@@ -1,9 +1,10 @@
 // run-spec: drive an app through a JSON spec, record every check, write a signed summary receipt and an evidence file.
 // Verdicts: PASS (exit 0), FAIL (exit 1: a check failed), ERROR (exit 2: the run could not finish).
-// Usage: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]
+// Usage: node src/run-spec.js --spec <file.json> [--spec <file.json> ...] --key-file <path> [--receipts <dir>] [--jobs N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
@@ -340,7 +341,9 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const detail = { checks, steps: asFiled(stepRecords), contexts: asFiled(contextRecords), console: asFiled(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
   // The write goes through receipt-scrub.js: what a failed write and writeReceipt add to the receipt is scrubbed there too.
-  const paths = await writeScrubbedReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir },
+  // `at` is stamped as the receipt joins the chain (stampNow), so runs that overlap never refuse each other; the evidence's
+  // "run" record above keeps the moment the run started.
+  const paths = await writeScrubbedReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir, stampNow: fixedStamp },
     "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again.");
   if (paths) { // detail keeps the real paths for callers
     detail.receiptPath = paths.receiptPath;
@@ -350,39 +353,103 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   return receipt;
 }
 
+// The most specs run at once: half the machine's workers (each run is a browser, and often an app server), at least one.
+export function maxJobs(parallelism = availableParallelism()) {
+  return Math.max(1, Math.floor(parallelism / 2));
+}
+
+// work(item) for every item, at most `jobs` at a time; the results in the order of items.
+export async function inPool(items, jobs, work) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await work(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(jobs, items.length) }, worker));
+  return results;
+}
+
+// Runs every spec, at most `jobs` at a time. Each run is independent: its own browser, app server and receipt, and one
+// that throws becomes an ERROR for that spec while the others go on. Results come back in the order of specPaths.
+export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs() } = {}) {
+  return inPool(specPaths, jobs, async specPath => {
+    try {
+      return await runSpec({ specPath, key, receiptsDir });
+    } catch (error) {
+      const message = `the run stopped: ${safeLine(error)}`;
+      return { verdict: "ERROR", spec: null, app: null, totals: null, checks: [], error: message, next: [message, "Run this spec again on its own."] };
+    }
+  });
+}
+
+// One exit code for many runs: a failed check says "not done" for sure, so it wins over ERROR (cannot tell), which wins
+// over a PASS that needs review.
+export function combinedExitCode(codes) {
+  for (const code of [EXIT.FAIL, EXIT.ERROR, EXIT_NEEDS_REVIEW]) if (codes.includes(code)) return code;
+  return EXIT.PASS;
+}
+
 const CLI_OPTIONS = {
-  spec: { type: "string" },
+  spec: { type: "string", multiple: true },
   "key-file": { type: "string" },
   receipts: { type: "string" },
+  jobs: { type: "string" },
   json: { type: "boolean" },
 };
 
-// CLI: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]. Returns the exit code.
+const asJson = receipt => ({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null });
+
+function printReceipt(receipt, label) {
+  const totals = receipt.totals;
+  console.log(`${receipt.verdict} ${receipt.spec ?? label} ${receipt.app ?? ""}`.trimEnd());
+  if (totals) console.log(`  ${totals.checks} checks, ${totals.passed} passed, ${totals.failed} failed`);
+  for (const check of receipt.checks) console.log(`  FAIL step ${check.step}: ${check.name}`);
+  if (receipt.review?.total > 0) {
+    console.log(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge (the run is not "done")`);
+    for (const item of receipt.review.items) console.log(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
+  }
+  if (receipt.error) console.log(`  error: ${receipt.error}`);
+  if (receipt.detail?.receiptPath) console.log(`  receipt:  ${scrubReceiptFile(receipt.detail.receiptPath)}`);
+  if (receipt.detail?.evidencePath) console.log(`  evidence: ${scrubReceiptFile(receipt.detail.evidencePath)}`);
+}
+
+function parseJobs(text, limit) {
+  if (text === undefined) return limit;
+  if (!/^[1-9]\d{0,5}$/.test(text)) throw new Error("--jobs takes a whole number of 1 or more");
+  const jobs = Number(text);
+  if (jobs > limit) console.error(`--jobs ${jobs} is more than half of this machine's ${availableParallelism()} workers; running ${limit} at a time`);
+  return Math.min(jobs, limit);
+}
+
+// CLI: node src/run-spec.js --spec <file.json> [--spec ...] --key-file <path> [--receipts <dir>] [--jobs N] [--json].
+// One spec prints as it always has; several print in the order given, then one line of totals. Returns the exit code.
 export async function main(args) {
   const values = parseCli(args, CLI_OPTIONS);
   if (process.env.PROOF_LAB_KEY !== undefined) {
     throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
   }
   if (!values["key-file"]) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
-  if (!values.spec) throw new Error("--spec <file.json> is required");
+  if (!values.spec?.length) throw new Error("--spec <file.json> is required");
+  const jobs = parseJobs(values.jobs, maxJobs());
   const key = await signingKeyFromFile(values["key-file"]);
-  const receipt = await runSpec({ specPath: values.spec, key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS });
-  if (values.json) {
-    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null }, null, 2));
-  } else {
-    const totals = receipt.totals;
-    console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());
-    if (totals) console.log(`  ${totals.checks} checks, ${totals.passed} passed, ${totals.failed} failed`);
-    for (const check of receipt.checks) console.log(`  FAIL step ${check.step}: ${check.name}`);
-    if (receipt.review?.total > 0) {
-      console.log(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge (the run is not "done")`);
-      for (const item of receipt.review.items) console.log(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
-    }
-    if (receipt.error) console.log(`  error: ${receipt.error}`);
-    if (receipt.detail?.receiptPath) console.log(`  receipt:  ${scrubReceiptFile(receipt.detail.receiptPath)}`);
-    if (receipt.detail?.evidencePath) console.log(`  evidence: ${scrubReceiptFile(receipt.detail.evidencePath)}`);
+  const receipts = await runSpecs(values.spec, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });
+  if (receipts.length === 1) {
+    if (values.json) console.log(JSON.stringify(asJson(receipts[0]), null, 2));
+    else printReceipt(receipts[0], "(no spec)");
+    return exitCodeOf(receipts[0]);
   }
-  return exitCodeOf(receipt);
+  if (values.json) {
+    console.log(JSON.stringify(receipts.map(asJson), null, 2));
+  } else {
+    // A spec that never got a name (it could not be read) is told apart by its place on the command line, not its path.
+    receipts.forEach((receipt, i) => printReceipt(receipt, `(spec ${i + 1})`));
+    const counts = Object.entries(Object.groupBy(receipts, receipt => receipt.verdict)).map(([verdict, list]) => `${list.length} ${verdict}`);
+    console.log(`${receipts.length} specs, ${Math.min(jobs, receipts.length)} at a time: ${counts.join(", ")}`);
+  }
+  return combinedExitCode(receipts.map(exitCodeOf));
 }
 
 if (isMainModule(import.meta.url)) await runCli(() => main(process.argv.slice(2)));

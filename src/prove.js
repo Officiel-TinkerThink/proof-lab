@@ -139,7 +139,7 @@ export async function prove({ url, bug, receiptsDir = DEFAULT_RECEIPTS, key = si
   // The same two calls as `run` (see receipt-scrub.js): scrub the receipt, then write it. A receipt that cannot be written
   // is not evidence: ERROR, never a silent PASS.
   scrubReceipt(receipt);
-  await writeScrubbedReceipt(receipt, { shot, key, dir: receiptsDir },
+  await writeScrubbedReceipt(receipt, { shot, key, dir: receiptsDir, stampNow: fixedStamp },
     "No receipt file was written, so this run is not evidence. Fix the receipts directory and run again.");
   return receipt;
 }
