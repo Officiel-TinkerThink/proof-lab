@@ -46,15 +46,15 @@ Planned fix: record structural data by default (names, pass or fail, counts, len
 
 ## U. User-feedback backlog (from `proof-lab-feedback.md`, 64 items, 2026-10-28)
 
-Fixed so far: F-06 (concurrent runs), F-07/F-30 (), F-15 (), F-13/F-44/F-59 (, "N of M specs run"), F-08 (), F-25/F-31/F-45/F-47/F-52/F-54 (, , ), F-26/F-46/F-55 ( absence lint), F-41 (ambiguous-target element list), F-04 ( note), F-56 (), the ops cheat sheet, and the docs items (F-21 corrected after a reproduction, F-33/F-34/F-48/F-49 already possible, F-26 to F-29, F-35, F-39, exit 3, flags). Still open, with the reason:
+Fixed so far: F-06 (concurrent runs), F-07/F-30 (`allowPageErrors`), F-15 (`validate`), F-13/F-44/F-59 (`--spec-dir`, "N of M specs run"), F-08 (`list`), F-25/F-31/F-45/F-47/F-52/F-54 (`capture`, `{{name}}`, `{{runId}}`), F-26/F-46/F-55 (`validate` absence lint), F-41 (ambiguous-target element list), F-04 (`look --spec` note), F-56 (`assertContrast`), the ops cheat sheet (`ops`), and the docs items (F-21 corrected after a reproduction, F-33/F-34/F-48/F-49 already possible, F-26 to F-29, F-35, F-39, exit 3, flags). Still open, with the reason:
 
 | ID | Item | Why open |
 |---|---|---|
-| U.1 | F-58: absolute receipt paths | Conflicts with the deliberate path scrubbing (S2.14); an owner decision.  prints file names only. |
-| U.2 | F-23:  signing a human verdict into the chain | The signing key is the one the agent holds, so an acceptance signed with it cannot be attributed to a human (ALCOA Attributable, Part 11 needs a separate reviewer identity). Needs an identity design. |
-| U.3 | F-37, F-42, F-51: runner-side HTTP step, mail sink | Needs an SSRF-safe design (app origin and loopback only, no redirects, size cap, no body in receipts);  replays it too. |
-| U.4 | F-50, F-53: second browser context, session identity |  opens one context; a second needs console/page-error collection and screenshot rules for every context. |
-| U.5 | F-57: table-driven step | Every entry point (run, look --until, validate, status) must expand rows identically; do it through one shared spec loader. |
+| U.1 | F-58: absolute receipt paths | Conflicts with the deliberate path scrubbing (S2.14); an owner decision. `list` prints file names only. |
+| U.2 | F-23: `review --accept` signing a human verdict into the chain | The signing key is the one the agent holds, so an acceptance signed with it cannot be attributed to a human (ALCOA Attributable; Part 11 needs a separate reviewer identity). Needs an identity design. |
+| U.3 | F-37, F-42, F-51: runner-side HTTP step, mail sink | Needs an SSRF-safe design (app origin and loopback only, no redirects, size cap, no body in receipts); `look --spec` replays it too. |
+| U.4 | F-50, F-53: second browser context, session identity | `session.js` opens one context; a second needs console and page-error collection and screenshot rules for every context. |
+| U.5 | F-57: table-driven step | Every entry point (run, look --until, validate, status) must expand rows identically: do it through one shared spec loader. |
 | U.6 | F-43, F-63: text that exists only in pieces | Needs a page-text search per failed assertion. |
 | U.7 | F-09: shorter PASS note | Tests pin the prefix; low value. |
-| U.8 | F-02, F-11, F-14, F-20, F-24, F-32, F-61, F-62, F-19, F-10, F-03, F-60 | agent-kit guard and  (found in D:/core/projects/agent-kit/plugins/proof-lab/scripts). Changing what the guard matches weakens a security control: needs the owner. |
+| U.8 | F-02, F-11, F-14, F-20, F-24, F-32, F-61, F-62, F-19, F-10, F-03, F-60 | agent-kit guard and `setup.mjs` (in D:/core/projects/agent-kit/plugins/proof-lab/scripts). Changing what the guard matches weakens a security control: needs the owner. |
