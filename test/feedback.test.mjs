@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { specsInDir } from "../src/run-spec.js";
 import { validateSpec } from "../src/spec/schema.js";
+import { TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
 const LAB = join(fileURLToPath(new URL("..", import.meta.url)), "src", "lab.js");
 const lab = args => spawnSync(process.execPath, [LAB, ...args], { encoding: "utf8", timeout: 60000 });
@@ -58,5 +59,36 @@ test("specsInDir: the .json files by name; an empty or missing directory is an e
     await assert.rejects(specsInDir(join(dir, "missing")), /--spec-dir could not be read/);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('allowPageErrors: an expected console error passes, an uncaught exception never does', TIMEOUT, async () => {
+  const click = [{ op: 'click', role: 'button', name: 'Log error' }, { op: 'assertText', check: 'page loaded', testId: 'items-state', equals: 'idle' }];
+  await withRun(page('/fixtures/network.html', click, { noPageErrors: true, allowPageErrors: ['logged error', '404'] }), async receipt => {
+    // The page logs its own error and the browser adds "Failed to load resource ... 404" for the favicon: both are listed.
+    assert.equal(receipt.verdict, 'PASS', explain(receipt));
+    assert.ok(receipt.pageErrors.includes('logged error'), 'the error stays in the receipt');
+  });
+  await withRun(page('/fixtures/network.html', click, { noPageErrors: true, allowPageErrors: ['something else'] }), async receipt => {
+    assert.equal(receipt.verdict, 'FAIL');
+  });
+  const load = [{ op: 'assertTitle', check: 'titled', contains: '' }];
+  await withRun(page('/fixtures/broken.html', load, { noPageErrors: true, allowPageErrors: ['boom', 'login failed'] }), async receipt => {
+    assert.equal(receipt.verdict, 'FAIL', 'an uncaught exception is not exempt even when its text is listed');
+    assert.ok(receipt.checks.some(check => check.name === 'no page errors'));
+  });
+});
+
+test('run: every --spec-dir is read, not only the last', async () => {
+  const empty = await mkdtemp(join(tmpdir(), 'pl-empty-'));
+  const full = await mkdtemp(join(tmpdir(), 'pl-full-'));
+  try {
+    await writeFile(join(full, 'a.json'), '{}');
+    const result = lab(['run', '--spec-dir', empty, '--spec-dir', full, '--key-file', join(full, 'no-key')]);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /--spec-dir holds no .json/, 'the first folder was read');
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+    await rm(full, { recursive: true, force: true });
   }
 });

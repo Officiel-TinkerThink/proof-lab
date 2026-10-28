@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { runCli } from "./cli.js";
-import { safeLine, scrubText } from "./receipt-scrub.js";
+import { scrubText } from "./receipt-scrub.js";
 import { validateSpec } from "./spec/schema.js";
 import { isMainModule, parseCli } from "./spec/util.js";
 
@@ -16,7 +16,9 @@ async function check(specPath) {
   try {
     spec = JSON.parse(await readFile(specPath, "utf8"));
   } catch (error) {
-    return { file, valid: false, problems: [`cannot be read or parsed: ${safeLine(error)}`] };
+    // A JSON.parse message can quote the file's own bytes, so (as in run-spec.js) only the kind of failure is reported.
+    const kind = error instanceof SyntaxError ? "parsed as JSON" : `read (${error?.code ?? "error"})`;
+    return { file, valid: false, problems: [`cannot be ${kind}`] };
   }
   const problems = validateSpec(spec).map(problem => scrubText(problem));
   return { file, valid: problems.length === 0, problems, steps: Array.isArray(spec?.steps) ? spec.steps.length : 0 };

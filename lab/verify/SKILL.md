@@ -26,7 +26,7 @@ description: Verify browser-visible work before saying it is done. Write or upda
 - `text=` selectors match case-insensitively and anywhere on the page. Prefer a positive check on the element that carries the value.
 - A browser-`required` field stops the form before the server answers; a number input cannot take words. Check native validation with `assertState`, or use an out-of-range value.
 - Pre-ticked defaults make "submit with nothing chosen" choose something. Assert the form state before the submit (`assertCount` on `:checked`).
-- Negative flows (a 401 or 404 the spec expects) log a browser console error. With `noPageErrors: true` list the expected text in `allowPageErrors` (`["401"]`); anything else still fails.
+- Negative flows (a 401 or 404 the spec expects) log a browser console error. With `noPageErrors: true` list the expected text in `allowPageErrors` (`["401"]`); uncaught exceptions and every other console error still fail.
 - A failed run that creates a record leaves it behind. Use a unique name per run, and mind throttles such as "5 wrong passwords".
 - `look` redacts the query and token parts of addresses on purpose (they show as `[hidden]`).
 

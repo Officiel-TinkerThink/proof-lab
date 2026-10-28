@@ -192,11 +192,14 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const pageErrors = new Set();
   let pageErrorsDropped = 0;
   const pageErrorLengths = new Map();
-  const noteError = raw => {
+  // Messages that came from an uncaught exception: allowPageErrors never exempts these, only a console line.
+  const uncaught = new Set();
+  const noteError = (raw, { fromConsole = false } = {}) => {
     const message = redactClip(raw, 1000);
     // The length is kept only for a message that is kept: the map cannot outgrow the capped set.
     if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) {
       pageErrors.add(message);
+      if (!fromConsole) uncaught.add(message);
       if (!pageErrorLengths.has(message)) pageErrorLengths.set(message, String(raw).length);
     }
     else if (!pageErrors.has(message)) pageErrorsDropped += 1;
@@ -232,7 +235,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         onLaunch: version => { browserVersion = version; },
         onPageError: message => noteError(message),
         onConsole: (level, text) => {
-          if (level === "error") noteError(text);
+          if (level === "error") noteError(text, { fromConsole: true });
           if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: redactClip(text, 1000) });
           else consoleDropped += 1;
         },
@@ -287,12 +290,14 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   if (completed) {
     // Last, so an error thrown late in the run (during the guard or the final screenshot) is still seen by this check.
     if (spec.noPageErrors === true) {
-      // An error that contains an allowed text is expected (a refusal's own 401 line); it stays in the evidence either way.
+      // A console error that contains an allowed text is expected (a refusal's own 401 line); it stays in the evidence either way.
+      // An uncaught exception is never exempt, and neither is a message the cap dropped: it cannot be shown to be allowed.
       const allowed = spec.allowPageErrors ?? [];
-      const unexpected = [...pageErrors].filter(message => !allowed.some(text => message.includes(text)));
+      const unexpected = [...pageErrors].filter(message => uncaught.has(message) || !allowed.some(text => message.includes(text)));
+      const pass = unexpected.length === 0 && pageErrorsDropped === 0;
       checks.push({
-        step: 0, name: "no page errors", pass: unexpected.length === 0, expected: [], actual: summarizePageErrors(unexpected, pageErrorLengths),
-        ...(unexpected.length > 0 ? { hint: "The page logged errors. Read the console records in the evidence file. A refusal the spec expects can be listed in allowPageErrors (for example \"401\")." } : {}),
+        step: 0, name: "no page errors", pass, expected: [], actual: summarizePageErrors(unexpected, pageErrorLengths),
+        ...(!pass ? { hint: "The page logged errors. Read the console records in the evidence file. A console error the spec expects (a refusal's own line) can be listed in allowPageErrors (for example \"401\"); an uncaught exception cannot." } : {}),
       });
     }
     if (checks.length === 0) {
@@ -401,7 +406,7 @@ const CLI_OPTIONS = {
   receipts: { type: "string" },
   jobs: { type: "string" },
   json: { type: "boolean" },
-  "spec-dir": { type: "string" },
+  "spec-dir": { type: "string", multiple: true },
 };
 
 // The *.json files of one directory, by name, so a whole suite runs from one command.
@@ -449,8 +454,12 @@ export async function main(args) {
     throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
   }
   if (!values["key-file"]) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
-  if (!values.spec?.length && !values["spec-dir"]) throw new Error("--spec <file.json> or --spec-dir <dir> is required");
-  const specPaths = [...(values.spec ?? []), ...(values["spec-dir"] ? await specsInDir(values["spec-dir"]) : [])];
+  if (!values.spec?.length && !values["spec-dir"]?.length) throw new Error("--spec <file.json> or --spec-dir <dir> is required");
+  const fromDirs = [];
+  for (const dir of values["spec-dir"] ?? []) fromDirs.push(...await specsInDir(dir));
+  // --spec flags run as typed (a repeat is on purpose). A file a folder adds that is already named runs once.
+  const named = new Set((values.spec ?? []).map(path => resolve(path)));
+  const specPaths = [...(values.spec ?? []), ...[...new Map(fromDirs.map(path => [resolve(path), path])).values()].filter(path => !named.has(resolve(path)))];
   const jobs = parseJobs(values.jobs, maxJobs());
   const key = await signingKeyFromFile(values["key-file"]);
   const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });

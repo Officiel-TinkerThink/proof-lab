@@ -83,7 +83,7 @@ An app exposes its revision with `<meta name="app-revision" content="<12 hex cha
 | `env` | The visitor's browser, fixed for the whole run: `viewport {width, height}`, `locale` (`de-DE`), `timezoneId` (`Asia/Tokyo`), `colorScheme` (`light` `dark` `no-preference`), `reducedMotion` (`reduce` `no-preference`), `geolocation {latitude, longitude, accuracy?}`, `permissions` (a list: `geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, `clipboard-write`, ...). Recorded in the evidence `run` record. There is no `offline` here: a run that starts offline cannot load its page; use the `setOffline` step. Geolocation is only readable by the page when `permissions` also lists `geolocation`. |
 | `timeoutMs` | Default budget per step, ms (default 3000, at most 600000). |
 | `noPageErrors` | Adds a final check: no uncaught exception and no `console.error` during the run. |
-| `allowPageErrors` | With `noPageErrors: true`: up to 20 texts (1 to 200 characters). An error that contains one is not counted, for the browser's own line about an expected refusal (`["401"]`). The console record stays in the evidence either way. |
+| `allowPageErrors` | With `noPageErrors: true`: up to 20 texts (1 to 200 characters). A console error that contains one is not counted, for the browser's own line about an expected refusal (`["401"]`). An uncaught exception is always counted, and so is any error beyond the 100 the runner keeps. The console record stays in the evidence either way. |
 | `steps` | 1 to 500 steps. The spec must contain an assertion (`assert*`, a `goto` with `status`) or `noPageErrors`, or it would prove nothing. |
 
 **Unknown fields are errors.** A typo such as `equal` is rejected before any browser starts; it can never turn an
