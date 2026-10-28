@@ -134,6 +134,9 @@ test('errorDetail: a strict-mode error keeps the first matched elements, shorten
   assert.match(detail, /resolved to 6 elements: <button id=a> \| <input> \| <button> \| <button>$/);
   assert.ok(!detail.includes('hunter2') && !detail.includes('Save'), 'only tag and plain identifiers are kept, never values or text');
   assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input name="q" value="a&quot;b hunter2" data-testid="x y"/> aka z')), /<input name=q>$/);
+  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <p>see name="hunter2" id="y"</p> aka z')), /<p>$/, 'text inside the element is never read');
+  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input value="a" name="q" title="a"b" data-testid="t-1"/> aka z')), /<input name=q>$/, 'a quote inside a value stops the scan');
+  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input id="a" type="text" name="q"/> aka z')), /<input id=a name=q>$/);
   assert.equal(errorDetail(new Error('plain\nsecond line')), 'plain');
 });
 

@@ -14,7 +14,7 @@ const CLI_OPTIONS = { spec: { type: "string", multiple: true }, json: { type: "b
 // when the page never rendered the area, so it needs a positive check before it to mean anything.
 const isAssertion = step => step && typeof step === "object" && OPS[step.op]?.assertion === true;
 // A goto that expects a status also proves the page answered, so it counts as the positive check.
-const isPositiveCheck = step => step && typeof step === "object" && step.op === "goto" && step.status !== undefined;
+const isPositiveCheck = step => step && typeof step === "object" && step.op === "goto" && step.status !== undefined && step.optional !== true;
 const isAbsence = step => step.not === true
   || (step.op === "assertCount" && step.count === 0)
   || (step.op === "assertVisible" && step.visible === false)

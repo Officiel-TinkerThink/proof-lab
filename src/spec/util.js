@@ -11,13 +11,17 @@ export const firstLine = error => (error instanceof Error ? error.message : Stri
 const MAX_LISTED_ELEMENTS = 4;
 const IDENTIFIER_ATTRIBUTES = ["id", "data-testid", "name"];
 const describeElement = line => {
-  const tag = /^\s*\d+\) <([a-zA-Z][a-zA-Z0-9-]{0,30})/.exec(line)?.[1];
-  if (!tag) return "<element>";
-  const attributes = IDENTIFIER_ATTRIBUTES.flatMap(name => {
-    const value = new RegExp(`[ <]${name}="([A-Za-z0-9_-]{1,40})"`).exec(line)?.[1];
-    return value === undefined ? [] : [`${name}=${value}`];
-  });
-  return `<${[tag, ...attributes].join(" ")}>`;
+  const opening = /^\s*\d+\) <([a-zA-Z][a-zA-Z0-9-]{0,30})/.exec(line);
+  if (!opening) return "<element>";
+  // Attributes are read one after the other from the end of the tag name and the scan stops at the first thing that is not
+  // name="value": text inside the element, or a quote inside a value, is never looked at.
+  const attributes = [];
+  let rest = line.slice(opening[0].length);
+  for (let match = /^\s+([A-Za-z][A-Za-z0-9:_-]*)="([^"]*)"/.exec(rest); match && attributes.length < 12; match = /^\s+([A-Za-z][A-Za-z0-9:_-]*)="([^"]*)"/.exec(rest)) {
+    if (IDENTIFIER_ATTRIBUTES.includes(match[1]) && /^[A-Za-z0-9_-]{1,40}$/.test(match[2])) attributes.push(`${match[1]}=${match[2]}`);
+    rest = rest.slice(match[0].length);
+  }
+  return `<${[opening[1], ...attributes].join(" ")}>`;
 };
 export function errorDetail(error) {
   const lines = (error instanceof Error ? error.message : String(error)).split("\n");
