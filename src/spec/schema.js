@@ -89,6 +89,9 @@ export const OPS = {
   assertCss: { target: "required", assertion: true, fields: { property: "string", ...MATCH }, required: ["property"], oneOf: MATCH_ONE },
   // count counts every match, so nth (which narrows to one) has no meaning here.
   assertCount: { target: "required", assertion: true, fields: { count: "integer", min: "integer", max: "integer" }, anyOf: ["count", "min", "max"], forbidden: ["nth"], conflicts: [["count", "min"], ["count", "max"]] },
+  // WCAG contrast ratio of the element's text colour on its background; min defaults to 4.5. A ratio that cannot be computed
+  // (a background image or gradient, opacity) becomes a claim for a human, never a pass.
+  assertContrast: { target: "required", assertion: true, fields: { min: "number" } },
   assertUrl: { target: "none", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
   assertTitle: { target: "none", assertion: true, fields: MATCH, oneOf: MATCH_ONE },
   // path reads inside the stored value, so it needs equals: with exists it would be silently ignored.

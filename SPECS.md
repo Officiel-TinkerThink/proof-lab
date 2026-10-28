@@ -121,6 +121,15 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
+### Recipes (found in use)
+
+- **Upload a file:** `setInputFiles` takes a path relative to the spec file, or `{ "name": "a.csv", "mimeType": "text/csv", "text": "..." }` or `"base64": "..."`. No file on disk is needed.
+- **A link that opens a new tab:** put `"expect": { "popup": { "switchTo": true } }` on the click; later steps then act in the new tab. `switchTab` and `closeTab` move between tabs.
+- **A consent or login page on another origin (OAuth):** drive it as a visitor would (click the provider button, `switchTab` or follow the redirect, fill the consent form with `fill`, click Allow), then `assertUrl` that you are back on the app. A test provider on loopback is better than a real one.
+- **Prove "blocked" and also "not stuck":** a refusal check (a 429 notice, a disabled button) passes forever if the app locks up. Add a second check that the visitor can still do the next thing (the form accepts a later valid input, the page still navigates).
+- **A state that survives a failed run** (a record, a throttle): use `{{runId}}` in names so each run starts clean.
+- **A theme the app switches with its own toggle** is not changed by `env.colorScheme` or `emulateMedia`; click the toggle, then assert.
+
 ### Variables: carry a value from one step to a later one
 
 `capture` reads one value off the page into a name; `{{name}}` in a later step uses it. `{{runId}}` is built in: a short
@@ -138,7 +147,7 @@ never leaves a record that blocks the next one.
 - A name must be captured by an earlier step: `validate` reports a typo or a wrong order. Write `\{{name}}` for the literal text.
 - A `goto` that uses a captured value must stay on the app's origin. A value is cut at 1000 characters. A field that holds a credential is never captured. The evidence timeline names the variable, not its value.
 
-### Operations (50)
+### Operations (51)
 
 | Op | Fields | Notes |
 |---|---|---|
@@ -166,6 +175,7 @@ never leaves a record that blocks the next one.
 | `assertProperty` | target, `property` (dotted), `equals` | For example `validity.valueMissing`. Objects compare by content. |
 | `assertCss` | target, `property`, one of `equals` `contains` `matches` | Computed style. |
 | `assertCount` | target, `count` or `min`/`max` | No `nth`. |
+| `assertContrast` | target, `min?` (default 4.5) | WCAG contrast ratio of the element's text colour on its background. Plain colours only: a background image, a gradient or opacity makes the ratio unknowable, and then the check is a `review` claim (exit 3), never a pass. Check both colour schemes with `emulateMedia` when the app follows the system setting; an app with its own theme toggle needs a click on the toggle first. |
 | `assertUrl` `assertTitle` | `equals` or `contains` or `matches` | |
 | `assertStorage` | `area?` (`local` default, `session`), `key`, `path?`, one of `equals` `exists` | The value is parsed as JSON when it can be; `path` is dotted. Objects compare by content. |
 | `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. A cookie value is usually a session token: the check never records a value, expected or actual: only the length and, for `equals` and for the actual side, a short keyed fingerprint (HMAC-SHA-256 with a random key held only for the run) (`(cookie, 7 characters, hmac 1a2b3c4d)`), so two different values are told apart on a mismatch. A cookie that is not there fails, also with `not`; use `exists: false` to expect absence. |

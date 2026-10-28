@@ -19,7 +19,7 @@ import { runCli } from "./cli.js";
 import { safeLine, scrubReceipt, scrubReceiptFile, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
 import { substituteStep } from "./spec/vars.js";
-import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
+import { bounded, errorDetail, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 export { validateSpec };
 
@@ -111,7 +111,7 @@ export async function runStep(ctx, step) {
       record.skipped = firstLine(error);
     } else {
       const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op}${target ? ` ${target}` : ""}).`;
-      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, firstLine(error));
+      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, errorDetail(error));
     }
   } finally {
     for (const cleanup of cleanups) cleanup();

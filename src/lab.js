@@ -1,4 +1,4 @@
-// One entry point: node src/lab.js <run|status|doctor|look|validate|show> [options]. Each command is the module of the same name;
+// One entry point: node src/lab.js <run|status|doctor|look|validate|list|ops|show> [options]. Each command is the module of the same name;
 // this file only picks it and keeps the exit-code contract: 0 pass, 1 a check or gate says no, 2 cannot tell.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,8 @@ const COMMANDS = {
   doctor: { about: "check key, receipts directory, chain and specs before a run", load: () => import("./doctor.js"), withDefaults: true },
   look: { about: "see a page as a spec sees it: roles, names, test ids, storage keys, console (no receipt)", load: () => import("./look.js"), withDefaults: false },
   validate: { about: "check specs for mistakes without running them (--spec, no browser, no receipt)", load: () => import("./validate.js"), withDefaults: false },
+  ops: { about: "one-page cheat sheet of every spec op and its fields (from the schema)", load: () => import("./ops.js"), withDefaults: false },
+  list: { about: "list the receipts, newest first (verdict, time, spec, file name)", load: () => import("./list.js"), withDefaults: true },
   show: { about: "read the evidence of one receipt (failures, steps, console, page)", load: () => import("./show.js"), withDefaults: true },
 };
 

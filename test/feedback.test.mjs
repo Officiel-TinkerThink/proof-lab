@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { specsInDir } from "../src/run-spec.js";
-import { validateSpec } from "../src/spec/schema.js";
+import { OPS, validateSpec } from "../src/spec/schema.js";
+import { errorDetail } from "../src/spec/util.js";
 import { substituteStep } from "../src/spec/vars.js";
 import { TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
@@ -121,5 +122,87 @@ test('variables: capture reads text and count into later steps; the evidence hol
   await withRun(page('/fixtures/network.html', steps, { noPageErrors: false }), async receipt => {
     assert.equal(receipt.verdict, 'FAIL', explain(receipt));
     assert.deepEqual(receipt.checks.map(check => check.name), ['wrong value fails']);
+  });
+});
+
+test('errorDetail: a strict-mode error keeps the first matched elements, shortened, with values hidden', () => {
+  const message = 'locator.click: Error: strict mode violation: getByRole(\'button\') resolved to 6 elements:\n'
+    + '    1) <button id="a">Save</button> aka getByRole(\'button\', { name: \'Save\' })\n'
+    + '    2) <input value="hunter2" type="text"/> aka locator(\'#b\')\n'
+    + [3, 4, 5, 6].map(n => `    ${n}) <button>${n}</button> aka x`).join('\n') + '\nCall log:\n  - waiting';
+  const detail = errorDetail(new Error(message));
+  assert.match(detail, /resolved to 6 elements: 1\) <button id="a">Save<\/button> \| 2\) <input value="…"/);
+  assert.ok(!detail.includes('hunter2') && !detail.includes('5) '), 'a value is hidden and at most four elements are listed');
+  assert.equal(errorDetail(new Error('plain\nsecond line')), 'plain');
+});
+
+test('list: shows receipts newest first, counts them, marks an unreadable file; a missing folder is an error', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pl-list-'));
+  try {
+    await writeFile(join(dir, '2026-01-01T00-00-00-000000000Z-unknown.json'), JSON.stringify({ verdict: 'PASS', spec: 'one', at: '2026-01-01T00:00:00Z' }));
+    await writeFile(join(dir, '2026-01-02T00-00-00-000000000Z-unknown.json'), '{ broken');
+    const out = lab(['list', '--receipts', dir]);
+    assert.equal(out.status, 0, out.stdout + out.stderr);
+    assert.match(out.stdout, /^2 receipts/m);
+    assert.ok(out.stdout.indexOf('UNREADABLE') < out.stdout.indexOf('PASS'), 'newest first');
+    assert.equal(JSON.parse(lab(['list', '--receipts', dir, '--limit', '1', '--json']).stdout).receipts.length, 1);
+    assert.equal(lab(['list', '--receipts', join(dir, 'missing')]).status, 2);
+    assert.equal(lab(['list', '--receipts', dir, '--limit', '0']).status, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('validate: an absence check with no positive check before it is a warning, never an error', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pl-lint-'));
+  try {
+    const bare = join(dir, 'bare.json');
+    const paired = join(dir, 'paired.json');
+    const absent = { op: 'assertCount', testId: 'error', count: 0 };
+    const shown = { op: 'assertVisible', testId: 'title' };
+    await writeFile(bare, JSON.stringify({ name: 't', steps: [absent] }));
+    await writeFile(paired, JSON.stringify({ name: 't', steps: [shown, absent] }));
+    const warned = lab(['validate', '--spec', bare]);
+    assert.equal(warned.status, 0, 'a warning does not fail validation');
+    assert.match(warned.stdout, /warning: steps\[0\] \(assertCount\) checks that something is absent/);
+    assert.doesNotMatch(lab(['validate', '--spec', paired]).stdout, /warning/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('look --spec: an app that is not on this machine gets a note that the steps are replayed there', TIMEOUT, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pl-lookwarn-'));
+  try {
+    const spec = join(dir, 's.json');
+    await writeFile(spec, JSON.stringify({ name: 't', app: { url: 'http://example.invalid:9/' }, steps: [{ op: 'goto', url: '/', status: 200 }] }));
+    const result = lab(['look', '--spec', spec, '--until', '0']);
+    assert.match(result.stderr, /not this machine/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('ops: the cheat sheet lists every op of the schema', () => {
+  const sheet = JSON.parse(lab(['ops', '--json']).stdout);
+  assert.deepEqual(sheet.map(entry => entry.op), Object.keys(OPS));
+  assert.ok(sheet.find(entry => entry.op === 'capture').fields.includes('from=text|value|count|attribute'));
+  assert.match(lab(['ops']).stdout, /^assertText! \[required\]/m);
+});
+
+test('assertContrast: computes the WCAG ratio; what it cannot compute is a claim for a human, never a pass', TIMEOUT, async () => {
+  const steps = [
+    { op: 'assertContrast', check: 'good is readable', selector: '#good' },
+    { op: 'assertContrast', check: 'translucent still readable', selector: '#alpha', min: 7 },
+    { op: 'assertContrast', check: 'poor is poor', selector: '#poor' },
+    { op: 'assertContrast', check: 'poor fails AAA', selector: '#poor', not: true, min: 3 },
+    { op: 'assertContrast', check: 'faded cannot be computed', selector: '#faded' },
+    { op: 'assertContrast', check: 'gradient cannot be computed', selector: '#image' },
+  ];
+  await withRun(page('/fixtures/contrast.html', steps, { noPageErrors: false }), async receipt => {
+    assert.equal(receipt.verdict, 'FAIL', explain(receipt));
+    assert.deepEqual(receipt.checks.map(check => check.name), ['poor is poor'], 'only the real ratio below the bar fails');
+    assert.match(String(receipt.checks[0].actual), /^1\.2\d?$/);
+    assert.equal(receipt.review.total, 2, 'the two uncomputable claims go to a human');
   });
 });

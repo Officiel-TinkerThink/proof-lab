@@ -85,6 +85,39 @@ const STATE_READERS = {
   }), undefined, { timeout: READ_TIMEOUT_MS }),
 };
 
+// Runs in the page. The WCAG ratio of the element's text colour over what is behind it, or why that cannot be known.
+// Only plain rgb()/rgba() colours with no image, gradient or opacity in the way are computed: a guess would be a false pass.
+function contrastInPage(element) {
+  const parse = text => {
+    const match = /^rgba?\(\s*([\d.]+)[, ]+\s*([\d.]+)[, ]+\s*([\d.]+)(?:\s*[,/]\s*([\d.]+)(%)?)?\s*\)$/.exec(text);
+    if (!match) return null;
+    const alpha = match[4] === undefined ? 1 : Number(match[4]) / (match[5] ? 100 : 1);
+    return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]), a: alpha };
+  };
+  const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+  const light = ({ r, g, b }) => {
+    const channel = value => { const c = value / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  };
+  const layers = [];
+  for (let node = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (Number(style.opacity) < 1) return { reason: "an element has opacity below 1" };
+    if (style.backgroundImage !== "none") return { reason: "the background is an image or gradient" };
+    const color = parse(style.backgroundColor);
+    if (!color) return { reason: `the background colour ${style.backgroundColor} is not a plain rgb colour` };
+    if (color.a > 0) layers.push(color);
+    if (color.a === 1) break;
+  }
+  let background = layers.at(-1)?.a === 1 ? layers.pop() : { r: 255, g: 255, b: 255, a: 1 };
+  while (layers.length > 0) background = over(layers.pop(), background);
+  const text = parse(getComputedStyle(element).color);
+  if (!text) return { reason: "the text colour is not a plain rgb colour" };
+  const foreground = over(text, background);
+  const [bright, dark] = [light(foreground), light(background)].sort((a, b) => b - a);
+  return { ratio: (bright + 0.05) / (dark + 0.05) };
+}
+
 const toFile = (file, specDir) => {
   if (typeof file === "string") return isAbsolute(file) ? file : resolve(specDir, file);
   const buffer = file.base64 !== undefined ? Buffer.from(file.base64, "base64") : Buffer.from(file.text ?? "", "utf8");
@@ -263,6 +296,23 @@ export const STEPS = {
     });
   },
   // The match sees the whole address; the record shows origin and path only (a code or token may be in the query).
+  async assertContrast(ctx, step) {
+    const wanted = step.min ?? 4.5;
+    let unknown = null;
+    const result = await poll(async () => {
+      const read = await (await existing(ctx, step)).evaluate(contrastInPage, undefined, { timeout: READ_TIMEOUT_MS });
+      unknown = read.ratio === undefined ? read.reason : null;
+      if (unknown !== null) return { pass: true, actual: null }; // nothing to wait for: the ratio is not computable
+      const ratio = Math.round(read.ratio * 100) / 100;
+      return { pass: step.not ? ratio < wanted : ratio >= wanted, actual: ratio };
+    }, budget(ctx, step));
+    // A ratio that cannot be computed is a claim for a human, not a pass and not a fail.
+    if (unknown !== null && result.error === undefined) {
+      ctx.reviews.push({ step: ctx.index, name: redactSecrets(step.check ?? `step ${ctx.index}: contrast`), note: `contrast could not be computed: ${unknown}` });
+      return;
+    }
+    ctx.record(step, result.pass, step.not ? { not: `contrast >= ${wanted}` } : `contrast >= ${wanted}`, result.actual ?? null, result.error);
+  },
   async assertUrl(ctx, step) { await textAssertion(ctx, step, async () => ctx.page.url(), hideQuery); },
   async assertTitle(ctx, step) { await textAssertion(ctx, step, () => ctx.page.title()); },
   async assertStorage(ctx, step) {

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: colour contrast</title>
+<style>
+body{font:16px system-ui;margin:2rem;background:#fff}
+#good{color:#000;background:#fff}
+#poor{color:#999;background:#aaa}
+#faded{color:#000;opacity:.5}
+#image{color:#fff;background:linear-gradient(#000,#444)}
+#alpha{color:#000;background:rgba(0,0,0,.1)}
+</style>
+</head>
+<body>
+<p id="good">Black on white</p>
+<p id="poor">Grey on grey</p>
+<p id="faded">Half faded</p>
+<p id="image">White on gradient</p>
+<p id="alpha">Black on translucent</p>
+</body>
+</html>
