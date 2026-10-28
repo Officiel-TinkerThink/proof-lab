@@ -3,7 +3,6 @@
 // Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -460,11 +459,9 @@ export async function main(args) {
   if (!values.spec?.length && !values["spec-dir"]?.length) throw new Error("--spec <file.json> or --spec-dir <dir> is required");
   const fromDirs = [];
   for (const dir of values["spec-dir"] ?? []) fromDirs.push(...await specsInDir(dir));
-  // --spec flags run as typed (a repeat is on purpose). A file a folder adds that is already named runs once.
-  // Files are compared by real path (as isMainModule does), so a different drive-letter case or a link is still the same file.
-  const identity = path => { try { return realpathSync.native(path); } catch { return resolve(path); } };
-  const named = new Set((values.spec ?? []).map(identity));
-  const specPaths = [...(values.spec ?? []), ...[...new Map(fromDirs.map(path => [identity(path), path])).values()].filter(path => !named.has(identity(path)))];
+  // Every named spec runs as named: a spec given twice (by --spec or by a folder) runs twice, and concurrent runs are safe.
+  // No path matching on purpose: whether two paths are "the same file" (links, drive-letter case) has no end.
+  const specPaths = [...(values.spec ?? []), ...fromDirs];
   const jobs = parseJobs(values.jobs, maxJobs());
   const key = await signingKeyFromFile(values["key-file"]);
   const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });
