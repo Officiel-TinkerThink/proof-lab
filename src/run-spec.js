@@ -3,6 +3,7 @@
 // Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -202,7 +203,9 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       if (!fromConsole) uncaught.add(message);
       if (!pageErrorLengths.has(message)) pageErrorLengths.set(message, String(raw).length);
     }
-    else if (!pageErrors.has(message)) pageErrorsDropped += 1;
+    // At the cap an uncaught exception cannot be marked, so it always counts as dropped (the check fails closed); only a
+    // console line that repeats a kept one is ignored.
+    else if (!fromConsole || !pageErrors.has(message)) pageErrorsDropped += 1;
   };
   const consoleRecords = [];
   let consoleDropped = 0;
@@ -458,8 +461,10 @@ export async function main(args) {
   const fromDirs = [];
   for (const dir of values["spec-dir"] ?? []) fromDirs.push(...await specsInDir(dir));
   // --spec flags run as typed (a repeat is on purpose). A file a folder adds that is already named runs once.
-  const named = new Set((values.spec ?? []).map(path => resolve(path)));
-  const specPaths = [...(values.spec ?? []), ...[...new Map(fromDirs.map(path => [resolve(path), path])).values()].filter(path => !named.has(resolve(path)))];
+  // Files are compared by real path (as isMainModule does), so a different drive-letter case or a link is still the same file.
+  const identity = path => { try { return realpathSync.native(path); } catch { return resolve(path); } };
+  const named = new Set((values.spec ?? []).map(identity));
+  const specPaths = [...(values.spec ?? []), ...[...new Map(fromDirs.map(path => [identity(path), path])).values()].filter(path => !named.has(identity(path)))];
   const jobs = parseJobs(values.jobs, maxJobs());
   const key = await signingKeyFromFile(values["key-file"]);
   const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });
