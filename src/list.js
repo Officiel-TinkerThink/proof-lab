@@ -2,8 +2,8 @@
 // Usage: node src/list.js [--receipts <dir>] [--limit <n>] [--json]
 // It only reads. It does not check signatures: `status` gives the verdict that counts.
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { receiptFiles } from "./chain.js";
 import { runCli } from "./cli.js";
 import { scrubText } from "./receipt-scrub.js";
@@ -46,5 +46,5 @@ export async function main(args, { defaultReceipts }) {
 }
 
 if (isMainModule(import.meta.url)) {
-  await runCli(() => main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? "receipts" }));
+  await runCli(() => main(process.argv.slice(2), { defaultReceipts: process.env.PROOF_LAB_RECEIPTS ?? join(fileURLToPath(new URL("..", import.meta.url)), "receipts") }));
 }

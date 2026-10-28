@@ -145,7 +145,7 @@ never leaves a record that blocks the next one.
 - `from`: `text`, `value`, `count` (how many elements match; the value is the number as text) or `attribute` (with `attribute`).
 - Replaced only in: `goto.url`, `fill.value`, `type.value`, and `equals`/`contains` of `assertText`, `assertValue`, `assertAttribute`, `assertUrl`, `assertTitle`, `assertCookie`. Never in a target, `matches`, `check`, `name` or `hint`: page text must not become a selector or a pattern.
 - A name must be captured by an earlier step: `validate` reports a typo or a wrong order. Write `\{{name}}` for the literal text.
-- A `goto` that uses a captured value must stay on the app's origin. A value is cut at 1000 characters. A field that holds a credential is never captured. The evidence timeline names the variable, not its value.
+- A `goto` that uses a captured value must stay on the app's origin. A value is cut at 1000 characters. A field that holds a credential is never captured. The evidence step record names the variable, not its value; a later check shows the value it compared, scrubbed like any other value. A text or value capture waits for the element like an assertion; `count` reads once and cannot be combined with `nth`.
 
 ### Operations (51)
 

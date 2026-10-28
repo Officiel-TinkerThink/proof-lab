@@ -384,6 +384,7 @@ function validateStep(step, at) {
     if (typeof step.as === "string" && (!VAR_NAME.test(step.as) || BUILTIN_VARS.includes(step.as))) {
       problems.push(`${label}.as must be a name of letters, digits and _ (starting with a letter, at most 40), and not a built-in (${BUILTIN_VARS.join(", ")})`);
     }
+    if (step.from === "count" && step.nth !== undefined) problems.push(`${label}: nth narrows to one element, so it has no meaning when from is "count" (count counts every match)`);
     if (step.from === "attribute" && step.attribute === undefined) problems.push(`${label} needs "attribute" when from is "attribute"`);
     if (step.from !== "attribute" && step.attribute !== undefined) problems.push(`${label}.attribute only applies when from is "attribute"`);
   }

@@ -13,6 +13,8 @@ const CLI_OPTIONS = { spec: { type: "string", multiple: true }, json: { type: "b
 // Warnings are advice, not errors: they never change the exit code. An absence check ("not shown", count 0) also passes
 // when the page never rendered the area, so it needs a positive check before it to mean anything.
 const isAssertion = step => step && typeof step === "object" && OPS[step.op]?.assertion === true;
+// A goto that expects a status also proves the page answered, so it counts as the positive check.
+const isPositiveCheck = step => step && typeof step === "object" && step.op === "goto" && step.status !== undefined;
 const isAbsence = step => step.not === true
   || (step.op === "assertCount" && step.count === 0)
   || (step.op === "assertVisible" && step.visible === false)
@@ -22,6 +24,7 @@ export function lintSpec(spec) {
   const warnings = [];
   let positive = false;
   (Array.isArray(spec?.steps) ? spec.steps : []).forEach((step, index) => {
+    if (isPositiveCheck(step)) positive = true;
     if (!isAssertion(step)) return;
     if (!isAbsence(step)) positive = true;
     else if (!positive) warnings.push(`steps[${index}] (${step.op}) checks that something is absent, with no positive check before it: it also passes when the page never rendered that area`);

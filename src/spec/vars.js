@@ -22,7 +22,7 @@ export const SUBSTITUTED = {
   assertCookie: ["equals", "contains"],
 };
 
-const fieldsOf = step => (SUBSTITUTED[step?.op] ?? []).filter(field => typeof step[field] === "string");
+const fieldsOf = step => (Object.hasOwn(SUBSTITUTED, step?.op) ? SUBSTITUTED[step.op] : []).filter(field => typeof step[field] === "string");
 
 // The names a step refers to (escaped references do not count).
 export function referencesOf(step) {

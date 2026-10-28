@@ -15,7 +15,8 @@ export function cheatSheet() {
       target: definition.target,
       assertion: definition.assertion === true,
       fields,
-      oneOf: definition.oneOf ?? definition.anyOf ?? [],
+      oneOf: definition.oneOf ?? [],
+      anyOf: definition.anyOf ?? [],
     };
   });
 }
@@ -29,7 +30,7 @@ export async function main(args) {
   }
   console.log("op (target: none | optional | required; ! = assertion, takes `not`)  fields (? = optional; a target adds role, label, text, testId, selector ...)");
   for (const entry of sheet) {
-    const pick = entry.oneOf.length > 0 ? `  one of: ${entry.oneOf.join(", ")}` : "";
+    const pick = (entry.oneOf.length > 0 ? `  exactly one of: ${entry.oneOf.join(", ")}` : "") + (entry.anyOf.length > 0 ? `  at least one of: ${entry.anyOf.join(", ")}` : "");
     console.log(`${entry.op}${entry.assertion ? "!" : ""} [${entry.target}] ${entry.fields.join(" ")}${pick}`);
   }
   return 0;

@@ -46,17 +46,15 @@ Planned fix: record structural data by default (names, pass or fail, counts, len
 
 ## U. User-feedback backlog (from `proof-lab-feedback.md`, 64 items, 2026-10-28)
 
-Fixed in this pass: F-07/F-30 (`allowPageErrors`), F-15 (`validate`), F-13/F-44/F-59 (`--spec-dir`, "N of M specs run"), the docs items (F-21, F-26 to F-29, F-31, F-35, exit 3, flags). F-06 was fixed earlier by the concurrent-runs commit. Deferred, with the reason:
+Fixed so far: F-06 (concurrent runs), F-07/F-30 (), F-15 (), F-13/F-44/F-59 (, "N of M specs run"), F-08 (), F-25/F-31/F-45/F-47/F-52/F-54 (, , ), F-26/F-46/F-55 ( absence lint), F-41 (ambiguous-target element list), F-04 ( note), F-56 (), the ops cheat sheet, and the docs items (F-21 corrected after a reproduction, F-33/F-34/F-48/F-49 already possible, F-26 to F-29, F-35, F-39, exit 3, flags). Still open, with the reason:
 
-| ID | Item | Why deferred |
+| ID | Item | Why open |
 |---|---|---|
-| U.1 | F-08, F-58: a `list` command; absolute receipt paths | `list` is new surface; absolute paths conflict with the deliberate path scrubbing (S2.14). Needs an owner decision. |
-| U.2 | F-23: `review --accept` that signs a human verdict into the chain | Chain format and Part 11 signing meaning need a design. |
-| U.3 | F-25, F-37, F-42, F-47, F-52, F-54: capture variables, setup hooks | New spec language; needs a design. |
-| U.4 | F-33, F-34, F-48 to F-51, F-53: binary upload, new-tab follow, second browser context, mail sink, session identity | New ops; each needs a design. |
-| U.5 | F-26, F-46, F-55: warn or refuse an absence-only check without a positive control | Lint rule with false positives; needs a design. |
-| U.6 | F-41, F-43, F-63: richer failure hints (match list, text in pieces) | Needs the locator code path; small follow-up. |
-| U.7 | F-04: `look --spec` warning when the app URL is not loopback | Small follow-up. |
-| U.8 | F-56, F-57, F-64: contrast check, table-driven step, `colorScheme` in screenshot | New features / needs reproduction. |
-| U.9 | F-02, F-11, F-14, F-20, F-24, F-32, F-61, F-62, F-19, F-10 | agent-kit guard and agent behaviour, not this repo. |
-| U.10 | F-03, F-60 | `setup.mjs` `--run --receipts` pass-through is not in this repo. |
+| U.1 | F-58: absolute receipt paths | Conflicts with the deliberate path scrubbing (S2.14); an owner decision.  prints file names only. |
+| U.2 | F-23:  signing a human verdict into the chain | The signing key is the one the agent holds, so an acceptance signed with it cannot be attributed to a human (ALCOA Attributable, Part 11 needs a separate reviewer identity). Needs an identity design. |
+| U.3 | F-37, F-42, F-51: runner-side HTTP step, mail sink | Needs an SSRF-safe design (app origin and loopback only, no redirects, size cap, no body in receipts);  replays it too. |
+| U.4 | F-50, F-53: second browser context, session identity |  opens one context; a second needs console/page-error collection and screenshot rules for every context. |
+| U.5 | F-57: table-driven step | Every entry point (run, look --until, validate, status) must expand rows identically; do it through one shared spec loader. |
+| U.6 | F-43, F-63: text that exists only in pieces | Needs a page-text search per failed assertion. |
+| U.7 | F-09: shorter PASS note | Tests pin the prefix; low value. |
+| U.8 | F-02, F-11, F-14, F-20, F-24, F-32, F-61, F-62, F-19, F-10, F-03, F-60 | agent-kit guard and  (found in D:/core/projects/agent-kit/plugins/proof-lab/scripts). Changing what the guard matches weakens a security control: needs the owner. |

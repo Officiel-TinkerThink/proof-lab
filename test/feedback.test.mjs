@@ -131,8 +131,9 @@ test('errorDetail: a strict-mode error keeps the first matched elements, shorten
     + '    2) <input value="hunter2" type="text"/> aka locator(\'#b\')\n'
     + [3, 4, 5, 6].map(n => `    ${n}) <button>${n}</button> aka x`).join('\n') + '\nCall log:\n  - waiting';
   const detail = errorDetail(new Error(message));
-  assert.match(detail, /resolved to 6 elements: 1\) <button id="a">Save<\/button> \| 2\) <input value="…"/);
-  assert.ok(!detail.includes('hunter2') && !detail.includes('5) '), 'a value is hidden and at most four elements are listed');
+  assert.match(detail, /resolved to 6 elements: <button id=a> \| <input> \| <button> \| <button>$/);
+  assert.ok(!detail.includes('hunter2') && !detail.includes('Save'), 'only tag and plain identifiers are kept, never values or text');
+  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input name="q" value="a&quot;b hunter2" data-testid="x y"/> aka z')), /<input name=q>$/);
   assert.equal(errorDetail(new Error('plain\nsecond line')), 'plain');
 });
 
@@ -205,4 +206,13 @@ test('assertContrast: computes the WCAG ratio; what it cannot compute is a claim
     assert.match(String(receipt.checks[0].actual), /^1\.2\d?$/);
     assert.equal(receipt.review.total, 2, 'the two uncomputable claims go to a human');
   });
+});
+
+test('review fixes: capture rules, prototype-name ops, ops anyOf, lint counts goto status, exact contrast bar', () => {
+  assert.match(validateSpec({ ...base, steps: [{ op: 'capture', selector: 'li', nth: 1, from: 'count', as: 'n' }] }).join(';'), /nth narrows/);
+  assert.deepEqual(validateSpec({ ...base, steps: [{ op: 'capture', selector: 'li', nth: 1, from: 'text', as: 'n' }] }), []);
+  assert.match(validateSpec({ ...base, steps: [{ op: 'constructor' }] }).join(';'), /is not one of/, 'an inherited name is an unknown op, not a crash');
+  const sheet = JSON.parse(lab(['ops', '--json']).stdout);
+  assert.deepEqual(sheet.find(entry => entry.op === 'assertCount').anyOf, ['count', 'min', 'max']);
+  assert.deepEqual(sheet.find(entry => entry.op === 'assertCount').oneOf, []);
 });

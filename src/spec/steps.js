@@ -109,6 +109,8 @@ function contrastInPage(element) {
     if (color.a > 0) layers.push(color);
     if (color.a === 1) break;
   }
+  // No opaque background: the browser paints the canvas, white unless the page opts into a colour scheme (then it may be dark).
+  if (layers.at(-1)?.a !== 1 && getComputedStyle(document.documentElement).colorScheme !== "normal") return { reason: "the page sets color-scheme, so the canvas colour is not known" };
   let background = layers.at(-1)?.a === 1 ? layers.pop() : { r: 255, g: 255, b: 255, a: 1 };
   while (layers.length > 0) background = over(layers.pop(), background);
   const text = parse(getComputedStyle(element).color);
@@ -211,15 +213,23 @@ export const STEPS = {
     if (isSensitiveStep({ ...step, op: step.from === "attribute" ? "assertAttribute" : "assertValue" })) {
       throw new Error("capture does not read a field that holds a credential");
     }
-    const options = { timeout: budget(ctx, step) };
     let value;
-    if (step.from === "count") value = String(await strict(ctx, step).count());
-    else {
-      const locator = await existing(ctx, step);
-      if (step.from === "text") value = (await locator.innerText(options)).trim();
-      else if (step.from === "value") value = await locator.inputValue(options);
-      else value = await locator.getAttribute(step.attribute, options);
-      if (value === null) throw new Error(`attribute "${step.attribute}" is not set`);
+    if (step.from === "count") {
+      value = String(await strict(ctx, step).count()); // read once: 0 is a real answer, so there is nothing to wait for
+    } else {
+      // Waits for the element like an assertion does (a page that renders the value late is not a failure).
+      const read = { timeout: READ_TIMEOUT_MS };
+      const result = await poll(async () => {
+        const locator = await existing(ctx, step);
+        let found;
+        if (step.from === "text") found = (await locator.innerText(read)).trim();
+        else if (step.from === "value") found = await locator.inputValue(read);
+        else found = await locator.getAttribute(step.attribute, read);
+        if (found === null) throw new Error(`attribute "${step.attribute}" is not set`);
+        return { pass: true, actual: found };
+      }, budget(ctx, step));
+      if (!result.pass) throw new Error(result.error ?? "element not found");
+      value = result.actual;
     }
     ctx.vars.set(step.as, value.length > MAX_VALUE_CHARS ? value.slice(0, MAX_VALUE_CHARS) : value);
   },
@@ -303,8 +313,8 @@ export const STEPS = {
       const read = await (await existing(ctx, step)).evaluate(contrastInPage, undefined, { timeout: READ_TIMEOUT_MS });
       unknown = read.ratio === undefined ? read.reason : null;
       if (unknown !== null) return { pass: true, actual: null }; // nothing to wait for: the ratio is not computable
-      const ratio = Math.round(read.ratio * 100) / 100;
-      return { pass: step.not ? ratio < wanted : ratio >= wanted, actual: ratio };
+      // The bar is compared with the exact ratio; only the shown value is rounded.
+      return { pass: step.not ? read.ratio < wanted : read.ratio >= wanted, actual: Math.round(read.ratio * 100) / 100 };
     }, budget(ctx, step));
     // A ratio that cannot be computed is a claim for a human, not a pass and not a fail.
     if (unknown !== null && result.error === undefined) {
