@@ -2,10 +2,11 @@
 // Assertions never throw: they poll, then record a check with the last value read.
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { addressLabel, hideQuery, maskValue, redactSecrets } from "./evidence.js";
+import { addressLabel, hideQuery, isSensitiveStep, maskValue, redactSecrets } from "./evidence.js";
 import { hasTarget, locate } from "./locate.js";
 import { poll } from "./poll.js";
 import { defined, pick, readPath } from "./util.js";
+import { MAX_VALUE_CHARS } from "./vars.js";
 
 // Reads inside a poll are short so the poll, not Playwright, decides how long to keep trying.
 const READ_TIMEOUT_MS = 250;
@@ -169,6 +170,25 @@ export const STEPS = {
     const by = [step.x ?? 0, step.y ?? 0];
     if (hasTarget(step)) await strict(ctx, step).evaluate((element, [x, y]) => element.scrollBy(x, y), by, withTimeout(ctx, step));
     else await ctx.page.mouse.wheel(...by);
+  },
+
+  // Reads one value into a variable. It records no check: a read that fails (no element) fails the step like an action.
+  async capture(ctx, step) {
+    // A value kept in a variable can reach a later step's expectation, so a credential field is never captured.
+    if (isSensitiveStep({ ...step, op: step.from === "attribute" ? "assertAttribute" : "assertValue" })) {
+      throw new Error("capture does not read a field that holds a credential");
+    }
+    const options = { timeout: budget(ctx, step) };
+    let value;
+    if (step.from === "count") value = String(await strict(ctx, step).count());
+    else {
+      const locator = await existing(ctx, step);
+      if (step.from === "text") value = (await locator.innerText(options)).trim();
+      else if (step.from === "value") value = await locator.inputValue(options);
+      else value = await locator.getAttribute(step.attribute, options);
+      if (value === null) throw new Error(`attribute "${step.attribute}" is not set`);
+    }
+    ctx.vars.set(step.as, value.length > MAX_VALUE_CHARS ? value.slice(0, MAX_VALUE_CHARS) : value);
   },
 
   // Assertions

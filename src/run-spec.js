@@ -2,7 +2,7 @@
 // Verdicts: PASS (exit 0), FAIL (exit 1: a check failed), ERROR (exit 2: the run could not finish).
 // Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -18,6 +18,7 @@ import { openSession } from "./spec/session.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceipt, scrubReceiptFile, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
+import { substituteStep } from "./spec/vars.js";
 import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 export { validateSpec };
@@ -47,10 +48,10 @@ function labelOf(step, index) {
 }
 
 // adopt(page) gives a popup the hooks and timeouts of the first page (see openSession); ctx.page moves to a popup on switchTo.
-export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks }) {
+export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks, runId = randomBytes(4).toString("hex") }) {
   const ctx = {
     // A tab the app closed stays the current page: a later step on it fails honestly instead of silently reading another tab.
-    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
+    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [], vars: new Map([["runId", runId]]),
     record(step, pass, rawExpected, rawActual, rawError) {
       // What the page or the spec shows can hold a credential (an address, a field value, an error that quotes one):
       // every value is scrubbed here, once, before it can reach the receipt or the evidence file.
@@ -85,6 +86,7 @@ export async function runStep(ctx, step) {
   const record = { type: "step", step: ctx.index, op: step.op, check: labelOf(step, ctx.index) };
   const target = describeTarget(step);
   if (target) record.target = target;
+  if (step.op === "capture") record.captured = step.as; // the name only: the value is not written down
   // Listeners a step arms (dialog, popup) are removed when the step ends, also when it was given up on: otherwise an
   // abandoned step's handler would answer a later step's dialog.
   const cleanups = [];
@@ -99,8 +101,10 @@ export async function runStep(ctx, step) {
       page: { get: () => ctx.page, set: page => { if (live()) ctx.page = page; } },
       onStepEnd: { value: cleanup => { cleanups.push(cleanup); } },
     });
-    const act = () => STEPS[step.op](stepCtx, step);
-    await bounded(step.expect === undefined ? act() : withExpectations(stepCtx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + stepLimits.graceMs + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
+    // {{name}} is replaced in a short list of value fields only (spec/vars.js); the label and the target stay as written.
+    const resolved = substituteStep(step, ctx.vars, ctx.appUrl);
+    const act = () => STEPS[step.op](stepCtx, resolved);
+    await bounded(step.expect === undefined ? act() : withExpectations(stepCtx, resolved, labelOf, act), (step.timeout ?? ctx.timeoutMs) + stepLimits.graceMs + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
   } catch (error) {
     ctx.epoch += 1; // the step is given up on: anything it still has in flight must not touch the run any more
     if (step.optional) {
@@ -211,6 +215,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const stepRecords = [];
   const contextRecords = [];
   const checks = [];
+  // {{runId}}: a short unique text for this run, for names a spec creates (see spec/vars.js). It is in the evidence run record.
+  const runId = randomBytes(4).toString("hex");
   let reviews = [];
   const seenRevisions = new Map();
   let changedWhileRunning = null;
@@ -259,7 +265,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
-    const ctx = createContext({ page, adopt: session.adopt, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
+    const ctx = createContext({ page, adopt: session.adopt, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks, runId });
     for (const [i, step] of spec.steps.entries()) {
       ctx.index = i + 1;
       const first = checks.length;
@@ -333,7 +339,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   scrubReceipt(receipt);
 
   const records = [
-    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
+    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, runId, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
     ...stepRecords,
     ...checks.map(check => ({ type: "check", ...check })),
     ...reviews.map(item => ({ type: "review", ...item })),

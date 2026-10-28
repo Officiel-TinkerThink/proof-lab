@@ -121,7 +121,24 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
-### Operations (49)
+### Variables: carry a value from one step to a later one
+
+`capture` reads one value off the page into a name; `{{name}}` in a later step uses it. `{{runId}}` is built in: a short
+unique text per run (also in the evidence run record), for names a spec creates (`"user-{{runId}}"`), so a failed run
+never leaves a record that blocks the next one.
+
+```json
+{ "op": "capture", "testId": "order-number", "from": "text", "as": "order" },
+{ "op": "click", "role": "link", "name": "Orders" },
+{ "op": "assertText", "check": "the order is listed", "testId": "latest-order", "contains": "{{order}}" }
+```
+
+- `from`: `text`, `value`, `count` (how many elements match; the value is the number as text) or `attribute` (with `attribute`).
+- Replaced only in: `goto.url`, `fill.value`, `type.value`, and `equals`/`contains` of `assertText`, `assertValue`, `assertAttribute`, `assertUrl`, `assertTitle`, `assertCookie`. Never in a target, `matches`, `check`, `name` or `hint`: page text must not become a selector or a pattern.
+- A name must be captured by an earlier step: `validate` reports a typo or a wrong order. Write `\{{name}}` for the literal text.
+- A `goto` that uses a captured value must stay on the app's origin. A value is cut at 1000 characters. A field that holds a credential is never captured. The evidence timeline names the variable, not its value.
+
+### Operations (50)
 
 | Op | Fields | Notes |
 |---|---|---|
@@ -162,6 +179,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `setStorage` | `area?`, `key`, `value` | A non-string value is stored as JSON, the form `assertStorage` reads back. The page must already be on the app (about:blank has no storage). |
 | `clearStorage` | `area?`, `key?` | One key, or the whole area. |
 | `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string with an offset such as `2030-06-15T12:00:00Z` or `+02:00`, a bare date = UTC midnight, or epoch ms; a time without an offset is rejected because it would depend on the runner's time zone), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
+| `capture` | target, `as`, `from` (`text` `value` `count` `attribute`), `attribute?` | Not an assertion: records no check. See Variables. |
 | `switchTab` | `index`, or one of `equals` `contains` `matches` | Moves the spec to another open tab. `index` counts the tabs that are open now, in the order they opened (0 = the oldest tab still open); the other form matches the tab's address. No such tab is a failed step. |
 | `closeTab` | | Closes the current tab and moves to the last one still open. The only tab cannot be closed. |
 

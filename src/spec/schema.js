@@ -2,7 +2,9 @@
 // Unknown fields are errors: a typo such as "equal" must not turn an assertion into a silent no-op.
 // Everything a validator can know without a browser is checked here, so a bad spec costs no browser run.
 
-export const TARGET_KEYS = ["role", "label", "text", "placeholder", "altText", "title", "testId", "selector"];
+import { BUILTIN_VARS, MAX_CAPTURES, VAR_NAME, referencesOf } from "./vars.js";
+
+export const TARGET_KEYS =["role", "label", "text", "placeholder", "altText", "title", "testId", "selector"];
 
 // How a step names the element it acts on. Exactly one of TARGET_KEYS; the rest refine it.
 export const TARGET_FIELDS = {
@@ -108,6 +110,9 @@ export const OPS = {
   clearStorage: { target: "none", fields: { area: ["local", "session"], key: "string" } },
   // install and setFixedTime/pauseAt take a time, fastForward and runFor take milliseconds.
   clock: { target: "none", fields: { action: CLOCK_ACTIONS, time: "string|number", ms: "number" }, required: ["action"] },
+
+  // Reads one value off the page into a variable for later steps ({{name}}, see vars.js). Not an assertion: it records no check.
+  capture: { target: "required", fields: { as: "string", from: ["text", "value", "count", "attribute"], attribute: "string" }, required: ["as", "from"], forbidden: ["optional"] },
 
   // Tabs: index counts open tabs in the order they were opened (0 = the first page); the other form matches the address.
   switchTab: { target: "none", fields: { index: "integer", ...MATCH }, oneOf: ["index", ...MATCH_ONE] },
@@ -372,6 +377,13 @@ function validateStep(step, at) {
   if (Array.isArray(step.permissions)) checkPermissions(step.permissions, `${label}.permissions`, problems);
   if (step.op === "clock") checkClock(step, label, problems);
   if (isObject(step.expect)) checkExpect(step.expect, label, problems);
+  if (step.op === "capture") {
+    if (typeof step.as === "string" && (!VAR_NAME.test(step.as) || BUILTIN_VARS.includes(step.as))) {
+      problems.push(`${label}.as must be a name of letters, digits and _ (starting with a letter, at most 40), and not a built-in (${BUILTIN_VARS.join(", ")})`);
+    }
+    if (step.from === "attribute" && step.attribute === undefined) problems.push(`${label} needs "attribute" when from is "attribute"`);
+    if (step.from !== "attribute" && step.attribute !== undefined) problems.push(`${label}.attribute only applies when from is "attribute"`);
+  }
   if (step.op === "setCookie") {
     if (step.cookie === "") problems.push(`${label}.cookie must not be empty`);
     if (typeof step.path === "string" && !step.path.startsWith("/")) problems.push(`${label}.path must start with /`);
@@ -434,6 +446,20 @@ export function validateSpec(spec) {
   }
   if (spec.steps.length > MAX_STEPS) problems.push(`steps must not hold more than ${MAX_STEPS} entries`);
   spec.steps.forEach((step, index) => problems.push(...validateStep(step, `steps[${index}]`)));
+  // A {{name}} must be built in or set by an earlier capture step, so a typo is caught here, not in a browser run.
+  const known = new Set(BUILTIN_VARS);
+  let captures = 0;
+  spec.steps.forEach((step, index) => {
+    if (!isObject(step)) return;
+    for (const { field, name } of referencesOf(step)) {
+      if (!known.has(name)) problems.push(`steps[${index}].${field} uses {{${name}}}, which no earlier capture step sets (write \\{{${name}}} for the literal text)`);
+    }
+    if (step.op === "capture" && typeof step.as === "string") {
+      known.add(step.as);
+      captures += 1;
+    }
+  });
+  if (captures > MAX_CAPTURES) problems.push(`spec must not hold more than ${MAX_CAPTURES} capture steps`);
   if (problems.length === 0 && !spec.steps.some(recordsCheck) && spec.noPageErrors !== true) {
     problems.push("spec has no assertions, so it would pass without proving anything: add an assert step, a goto with status, or noPageErrors: true");
   }

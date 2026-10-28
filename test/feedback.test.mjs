@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { specsInDir } from "../src/run-spec.js";
 import { validateSpec } from "../src/spec/schema.js";
+import { substituteStep } from "../src/spec/vars.js";
 import { TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
 
 const LAB = join(fileURLToPath(new URL("..", import.meta.url)), "src", "lab.js");
@@ -91,4 +92,34 @@ test('run: every --spec-dir is read, not only the last', async () => {
     await rm(empty, { recursive: true, force: true });
     await rm(full, { recursive: true, force: true });
   }
+});
+
+test('variables: a reference needs an earlier capture; only listed value fields are replaced; goto stays on the origin', () => {
+  const capture = { op: 'capture', testId: 'x', from: 'text', as: 'first' };
+  const fine = { ...base, steps: [capture, { op: 'assertText', testId: 'y', equals: 'a {{first}} b {{runId}}' }] };
+  assert.deepEqual(validateSpec(fine), []);
+  assert.match(validateSpec({ ...base, steps: [{ op: 'assertText', testId: 'y', equals: '{{first}}' }, capture] }).join(';'), /no earlier capture/);
+  assert.deepEqual(validateSpec({ ...base, steps: [{ op: 'assertText', testId: 'y', equals: String.raw`\{{first}}` }] }), [], 'an escaped reference is literal text');
+  assert.match(validateSpec({ ...base, steps: [{ ...capture, as: 'runId' }] }).join(';'), /built-in/);
+  assert.match(validateSpec({ ...base, steps: [{ ...capture, from: 'attribute' }] }).join(';'), /needs "attribute"/);
+  const vars = new Map([['first', 'hello'], ['bad', 'https://evil.example/']]);
+  const app = 'http://127.0.0.1:1234';
+  assert.equal(substituteStep({ op: 'fill', testId: 'a', value: 'x-{{first}}' }, vars, app).value, 'x-hello');
+  assert.equal(substituteStep({ op: 'click', testId: '{{first}}' }, vars, app).testId, '{{first}}', 'targets are never replaced');
+  assert.equal(substituteStep({ op: 'assertText', testId: 'a', matches: '{{first}}', equals: undefined, contains: String.raw`\{{first}}` }, vars, app).contains, '{{first}}');
+  assert.throws(() => substituteStep({ op: 'goto', url: '{{bad}}' }, vars, app), /origin/);
+  assert.throws(() => substituteStep({ op: 'fill', testId: 'a', value: '{{nope}}' }, vars, app), /never captured/);
+});
+
+test('variables: capture reads text and count into later steps; the evidence holds the name, not the value', TIMEOUT, async () => {
+  const steps = [
+    { op: 'capture', testId: 'items-state', from: 'text', as: 'state' },
+    { op: 'capture', selector: 'button', from: 'count', as: 'buttons' },
+    { op: 'assertText', check: 'state carried over', testId: 'items-state', equals: '{{state}}' },
+    { op: 'assertText', check: 'wrong value fails', testId: 'items-state', contains: '{{buttons}}x' },
+  ];
+  await withRun(page('/fixtures/network.html', steps, { noPageErrors: false }), async receipt => {
+    assert.equal(receipt.verdict, 'FAIL', explain(receipt));
+    assert.deepEqual(receipt.checks.map(check => check.name), ['wrong value fails']);
+  });
 });
