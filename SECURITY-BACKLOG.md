@@ -43,3 +43,20 @@ Planned fix: record structural data by default (names, pass or fail, counts, len
 | S3.5 | Hint text is clipped at 300 characters while the docs say 200. | info |
 | S3.6 | Old-name receipts are matched in `status` by a dual-form comparison (kept for compatibility). | info |
 | S3.7 | `writeAtomic` (`src/chain.js`) renames the file into place and then syncs the directory (POSIX). If the sync fails, its catch removes only the temporary file: the renamed receipt stays on disk, `writeReceipt` does not list it in `leftovers`, and the run reports ERROR while a signed receipt exists. Fixed on POSIX (run 6): a rename the directory does not confirm removes its target, so a failed write leaves nothing. Residual: on Windows the directory is not synced, so the rename is not flushed by this code. | low, POSIX fixed |
+
+## U. User-feedback backlog (from `proof-lab-feedback.md`, 64 items, 2026-10-28)
+
+Fixed in this pass: F-07/F-30 (`allowPageErrors`), F-15 (`validate`), F-13/F-44/F-59 (`--spec-dir`, "N of M specs run"), the docs items (F-21, F-26 to F-29, F-31, F-35, exit 3, flags). F-06 was fixed earlier by the concurrent-runs commit. Deferred, with the reason:
+
+| ID | Item | Why deferred |
+|---|---|---|
+| U.1 | F-08, F-58: a `list` command; absolute receipt paths | `list` is new surface; absolute paths conflict with the deliberate path scrubbing (S2.14). Needs an owner decision. |
+| U.2 | F-23: `review --accept` that signs a human verdict into the chain | Chain format and Part 11 signing meaning need a design. |
+| U.3 | F-25, F-37, F-42, F-47, F-52, F-54: capture variables, setup hooks | New spec language; needs a design. |
+| U.4 | F-33, F-34, F-48 to F-51, F-53: binary upload, new-tab follow, second browser context, mail sink, session identity | New ops; each needs a design. |
+| U.5 | F-26, F-46, F-55: warn or refuse an absence-only check without a positive control | Lint rule with false positives; needs a design. |
+| U.6 | F-41, F-43, F-63: richer failure hints (match list, text in pieces) | Needs the locator code path; small follow-up. |
+| U.7 | F-04: `look --spec` warning when the app URL is not loopback | Small follow-up. |
+| U.8 | F-56, F-57, F-64: contrast check, table-driven step, `colorScheme` in screenshot | New features / needs reproduction. |
+| U.9 | F-02, F-11, F-14, F-20, F-24, F-32, F-61, F-62, F-19, F-10 | agent-kit guard and agent behaviour, not this repo. |
+| U.10 | F-03, F-60 | `setup.mjs` `--run --receipts` pass-through is not in this repo. |

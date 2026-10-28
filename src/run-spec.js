@@ -1,9 +1,9 @@
 // run-spec: drive an app through a JSON spec, record every check, write a signed summary receipt and an evidence file.
 // Verdicts: PASS (exit 0), FAIL (exit 1: a check failed), ERROR (exit 2: the run could not finish).
-// Usage: node src/run-spec.js --spec <file.json> [--spec <file.json> ...] --key-file <path> [--receipts <dir>] [--jobs N] [--json]
+// Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -287,9 +287,12 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   if (completed) {
     // Last, so an error thrown late in the run (during the guard or the final screenshot) is still seen by this check.
     if (spec.noPageErrors === true) {
+      // An error that contains an allowed text is expected (a refusal's own 401 line); it stays in the evidence either way.
+      const allowed = spec.allowPageErrors ?? [];
+      const unexpected = [...pageErrors].filter(message => !allowed.some(text => message.includes(text)));
       checks.push({
-        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: summarizePageErrors([...pageErrors], pageErrorLengths),
-        ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read the console records in the evidence file." } : {}),
+        step: 0, name: "no page errors", pass: unexpected.length === 0, expected: [], actual: summarizePageErrors(unexpected, pageErrorLengths),
+        ...(unexpected.length > 0 ? { hint: "The page logged errors. Read the console records in the evidence file. A refusal the spec expects can be listed in allowPageErrors (for example \"401\")." } : {}),
       });
     }
     if (checks.length === 0) {
@@ -398,7 +401,21 @@ const CLI_OPTIONS = {
   receipts: { type: "string" },
   jobs: { type: "string" },
   json: { type: "boolean" },
+  "spec-dir": { type: "string" },
 };
+
+// The *.json files of one directory, by name, so a whole suite runs from one command.
+export async function specsInDir(dir) {
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch (error) {
+    throw new Error(`--spec-dir could not be read: ${safeLine(error)}`);
+  }
+  const specs = names.filter(name => name.endsWith(".json")).sort().map(name => join(dir, name));
+  if (specs.length === 0) throw new Error("--spec-dir holds no .json spec files");
+  return specs;
+}
 
 const asJson = receipt => ({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null });
 
@@ -432,10 +449,11 @@ export async function main(args) {
     throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
   }
   if (!values["key-file"]) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
-  if (!values.spec?.length) throw new Error("--spec <file.json> is required");
+  if (!values.spec?.length && !values["spec-dir"]) throw new Error("--spec <file.json> or --spec-dir <dir> is required");
+  const specPaths = [...(values.spec ?? []), ...(values["spec-dir"] ? await specsInDir(values["spec-dir"]) : [])];
   const jobs = parseJobs(values.jobs, maxJobs());
   const key = await signingKeyFromFile(values["key-file"]);
-  const receipts = await runSpecs(values.spec, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });
+  const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });
   if (receipts.length === 1) {
     if (values.json) console.log(JSON.stringify(asJson(receipts[0]), null, 2));
     else printReceipt(receipts[0], "(no spec)");
@@ -447,7 +465,7 @@ export async function main(args) {
     // A spec that never got a name (it could not be read) is told apart by its place on the command line, not its path.
     receipts.forEach((receipt, i) => printReceipt(receipt, `(spec ${i + 1})`));
     const counts = Object.entries(Object.groupBy(receipts, receipt => receipt.verdict)).map(([verdict, list]) => `${list.length} ${verdict}`);
-    console.log(`${receipts.length} specs, ${Math.min(jobs, receipts.length)} at a time: ${counts.join(", ")}`);
+    console.log(`${receipts.length} of ${specPaths.length} specs run, ${Math.min(jobs, receipts.length)} at a time: ${counts.join(", ")}`);
   }
   return combinedExitCode(receipts.map(exitCodeOf));
 }

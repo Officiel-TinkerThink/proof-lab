@@ -131,7 +131,10 @@ const EXPECT_TEXT_FIELDS = { dialog: ["message"], download: ["filename", "conten
 // Browser-context settings a spec may fix for the whole run.
 const ENV_FIELDS = { viewport: "object", locale: "string", timezoneId: "string", colorScheme: COLOR_SCHEMES, reducedMotion: REDUCED_MOTION, geolocation: "object", permissions: "array" };
 
-const TOP_LEVEL = { name: "string", app: "object", env: "object", steps: "array", timeoutMs: "number", noPageErrors: "boolean" };
+const TOP_LEVEL = { name: "string", app: "object", env: "object", steps: "array", timeoutMs: "number", noPageErrors: "boolean", allowPageErrors: "array" };
+// Expected browser noise (a refusal's own "Failed to load resource: 401") a spec may exempt from noPageErrors.
+const MAX_ALLOWED_ERRORS = 20;
+const MAX_ALLOWED_ERROR_LENGTH = 200;
 const APP_FIELDS = { url: "string", bug: "string", start: "string" };
 const MAX_STEPS = 500;
 const MAX_TIMEOUT_MS = 600000;
@@ -412,6 +415,16 @@ export function validateSpec(spec) {
   }
   if (isObject(spec.app)) checkApp(spec.app, problems);
   if (isObject(spec.env)) checkEnv(spec.env, problems);
+  if (Array.isArray(spec.allowPageErrors)) {
+    const list = spec.allowPageErrors;
+    if (list.length > MAX_ALLOWED_ERRORS) problems.push(`allowPageErrors must not hold more than ${MAX_ALLOWED_ERRORS} entries`);
+    list.forEach((text, index) => {
+      if (typeof text !== "string" || text.length < 1 || text.length > MAX_ALLOWED_ERROR_LENGTH) {
+        problems.push(`allowPageErrors[${index}] must be a text of 1 to ${MAX_ALLOWED_ERROR_LENGTH} characters`);
+      }
+    });
+    if (spec.noPageErrors !== true) problems.push("allowPageErrors only has a meaning with noPageErrors: true");
+  }
   if (typeof spec.timeoutMs === "number" && !(spec.timeoutMs >= 1 && spec.timeoutMs <= MAX_TIMEOUT_MS)) {
     problems.push(`timeoutMs must be from 1 to ${MAX_TIMEOUT_MS}`);
   }

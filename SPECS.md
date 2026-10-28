@@ -8,12 +8,15 @@ headless browser through it, records every check, and writes a signed **receipt*
 node src/doctor.js  --key-file <key> [--spec specs/x.json]      is the setup sound?        exit 0 / 2
 node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR / 3 PASS but needs review
                      [--spec specs/y.json ...] [--jobs N]       several specs, concurrently (see "Many specs at once")
+                     [--spec-dir specs]                         every .json in a folder, by name
+node src/validate.js --spec specs/x.json [--spec ...] [--json]   check specs without running them  exit 0 / 2
+node src/status.js  ... [--max-attempts N] [--max-age SECONDS]  (see the stop rules below)
 node src/status.js  --spec specs/x.json --key-file <key>        can I say done?            exit 0 / 1 / 2 / 3
 node src/show.js    --key-file <key> [--failures|--steps|...]   what happened in detail?
 node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does the page offer a spec? (no receipt, no key)
 ```
 
-`node src/lab.js <run|status|doctor|show|look> ...` is the same set behind one entry point.
+`node src/lab.js <run|status|doctor|show|look|validate> ...` is the same set behind one entry point.
 
 The key is read from a file only (`--key-file`, mode 0600 on Linux and macOS, at least 32 bytes). `PROOF_LAB_KEY` in the
 environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or `PROOF_LAB_RECEIPTS` says otherwise.
@@ -24,7 +27,8 @@ environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or 
 (`os.availableParallelism()`, at least one) at a time. `--jobs N` lowers that; a higher number is cut to the half, with a
 note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
 that cannot be read, or a run that stops, is an ERROR for that spec only; the others go on. The results print in the order of
-the `--spec` flags (`--json` prints a list), then one line of totals. The exit code is 1 if any spec FAILed, else 2 if any
+the `--spec` flags (`--json` prints a list), then one line of totals ("N of M specs run"). `--spec-dir <dir>` adds every `.json` file of a
+folder, by name, to the specs given with `--spec`. The exit code is 1 if any spec FAILed, else 2 if any
 was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exits exactly as before.
 
 Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
@@ -79,6 +83,7 @@ An app exposes its revision with `<meta name="app-revision" content="<12 hex cha
 | `env` | The visitor's browser, fixed for the whole run: `viewport {width, height}`, `locale` (`de-DE`), `timezoneId` (`Asia/Tokyo`), `colorScheme` (`light` `dark` `no-preference`), `reducedMotion` (`reduce` `no-preference`), `geolocation {latitude, longitude, accuracy?}`, `permissions` (a list: `geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, `clipboard-write`, ...). Recorded in the evidence `run` record. There is no `offline` here: a run that starts offline cannot load its page; use the `setOffline` step. Geolocation is only readable by the page when `permissions` also lists `geolocation`. |
 | `timeoutMs` | Default budget per step, ms (default 3000, at most 600000). |
 | `noPageErrors` | Adds a final check: no uncaught exception and no `console.error` during the run. |
+| `allowPageErrors` | With `noPageErrors: true`: up to 20 texts (1 to 200 characters). An error that contains one is not counted, for the browser's own line about an expected refusal (`["401"]`). The console record stays in the evidence either way. |
 | `steps` | 1 to 500 steps. The spec must contain an assertion (`assert*`, a `goto` with `status`) or `noPageErrors`, or it would prove nothing. |
 
 **Unknown fields are errors.** A typo such as `equal` is rejected before any browser starts; it can never turn an

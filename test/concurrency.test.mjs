@@ -153,7 +153,7 @@ test("run takes several specs: each gets its own receipt, a broken one does not 
   const lines = result.stdout.split("\n");
   assert.match(lines[0], /^PASS waitlist@/);
   assert.ok(lines.some(line => /^ERROR \(spec 2\)/.test(line)), result.stdout);
-  assert.match(result.stdout, /^3 specs, \d at a time: 2 PASS, 1 ERROR$/m);
+  assert.match(result.stdout, /^3 of 3 specs run, \d at a time: 2 PASS, 1 ERROR$/m);
   assert.equal((await receiptNames(receipts)).length, 2);
   assert.deepEqual((await verifyChain(receipts, key)).problems, []);
 
