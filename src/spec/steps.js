@@ -314,7 +314,11 @@ export const STEPS = {
       unknown = read.ratio === undefined ? read.reason : null;
       if (unknown !== null) return { pass: true, actual: null }; // nothing to wait for: the ratio is not computable
       // The bar is compared with the exact ratio; the shown value is cut to two decimals.
-      return { pass: step.not ? read.ratio < wanted : read.ratio >= wanted, actual: Math.floor(read.ratio * 100 + 1e-9) / 100 }; // cut, not rounded: a failing value never reads as equal to the bar (the 1e-9 only absorbs binary-float noise)
+      // Cut, not rounded. The 1e-9 only absorbs binary-float noise (4.57 held as 4.5699999...), and it is dropped when it
+      // would move the shown value across the bar: a value that fails never reads as equal to the bar.
+      const cut = Math.floor(read.ratio * 100) / 100;
+      const nudged = Math.floor(read.ratio * 100 + 1e-9) / 100;
+      return { pass: step.not ? read.ratio < wanted : read.ratio >= wanted, actual: (nudged >= wanted) === (read.ratio >= wanted) ? nudged : cut };
     }, budget(ctx, step));
     // A ratio that cannot be computed is a claim for a human, not a pass and not a fail.
     if (unknown !== null && result.error === undefined) {

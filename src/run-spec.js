@@ -112,8 +112,9 @@ export async function runStep(ctx, step) {
     } else {
       const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op}${target ? ` ${target}` : ""}).`;
       let detail = errorDetail(error);
-      if (/strict mode violation/.test(detail) && hasTarget(step)) {
-        const matches = await describeMatches(ctx.page, step);
+      const named = /strict mode violation.*resolved to (\d+) elements/.exec(detail);
+      if (named && hasTarget(step)) {
+        const matches = await describeMatches(ctx.page, step, Number(named[1]));
         if (matches.length > 0) detail = `${detail} ${matches.join(" | ")}`;
       }
       ctx.record({ ...step, hint }, false, `${step.op} completes`, null, detail);
