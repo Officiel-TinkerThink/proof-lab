@@ -7,15 +7,32 @@ headless browser through it, records every check, and writes a signed **receipt*
 ```
 node src/doctor.js  --key-file <key> [--spec specs/x.json]      is the setup sound?        exit 0 / 2
 node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR / 3 PASS but needs review
+                     [--spec specs/y.json ...] [--jobs N]       several specs, concurrently (see "Many specs at once")
+                     [--spec-dir specs]                         every .json in a folder, by name
+node src/validate.js --spec specs/x.json [--spec ...] [--json]   check specs without running them  exit 0 / 2
+node src/status.js  ... [--max-attempts N] [--max-age SECONDS]  (see the stop rules below)
 node src/status.js  --spec specs/x.json --key-file <key>        can I say done?            exit 0 / 1 / 2 / 3
 node src/show.js    --key-file <key> [--failures|--steps|...]   what happened in detail?
 node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does the page offer a spec? (no receipt, no key)
 ```
 
-`node src/lab.js <run|status|doctor|show|look> ...` is the same set behind one entry point.
+`node src/lab.js <run|status|doctor|show|look|validate> ...` is the same set behind one entry point.
 
 The key is read from a file only (`--key-file`, mode 0600 on Linux and macOS, at least 32 bytes). `PROOF_LAB_KEY` in the
 environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or `PROOF_LAB_RECEIPTS` says otherwise.
+
+### Many specs at once
+
+`run` takes `--spec` more than once and runs the specs concurrently: at most half of the machine's workers
+(`os.availableParallelism()`, at least one) at a time. `--jobs N` lowers that; a higher number is cut to the half, with a
+note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
+that cannot be read, or a run that stops, is an ERROR for that spec only; the others go on. The results print in the order of
+the `--spec` flags (`--json` prints a list), then one line of totals ("N of M specs run"). `--spec-dir <dir>` adds every `.json` file of a
+folder, by name, to the specs given with `--spec`. The exit code is 1 if any spec FAILed, else 2 if any
+was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exits exactly as before.
+
+Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
+the chain, inside the lock, so whichever run finishes first comes first and no run refuses another.
 
 ## The loop
 
@@ -66,6 +83,7 @@ An app exposes its revision with `<meta name="app-revision" content="<12 hex cha
 | `env` | The visitor's browser, fixed for the whole run: `viewport {width, height}`, `locale` (`de-DE`), `timezoneId` (`Asia/Tokyo`), `colorScheme` (`light` `dark` `no-preference`), `reducedMotion` (`reduce` `no-preference`), `geolocation {latitude, longitude, accuracy?}`, `permissions` (a list: `geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, `clipboard-write`, ...). Recorded in the evidence `run` record. There is no `offline` here: a run that starts offline cannot load its page; use the `setOffline` step. Geolocation is only readable by the page when `permissions` also lists `geolocation`. |
 | `timeoutMs` | Default budget per step, ms (default 3000, at most 600000). |
 | `noPageErrors` | Adds a final check: no uncaught exception and no `console.error` during the run. |
+| `allowPageErrors` | With `noPageErrors: true`: up to 20 texts (1 to 200 characters). A console error that contains one is not counted, for the browser's own line about an expected refusal (`["401"]`). An uncaught exception is always counted, and so is any error beyond the 100 the runner keeps. The console record stays in the evidence either way. |
 | `steps` | 1 to 500 steps. The spec must contain an assertion (`assert*`, a `goto` with `status`) or `noPageErrors`, or it would prove nothing. |
 
 **Unknown fields are errors.** A typo such as `equal` is rejected before any browser starts; it can never turn an
@@ -103,7 +121,33 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
-### Operations (49)
+### Recipes (found in use)
+
+- **Upload a file:** `setInputFiles` takes a path relative to the spec file, or `{ "name": "a.csv", "mimeType": "text/csv", "text": "..." }` or `"base64": "..."`. No file on disk is needed.
+- **A link that opens a new tab:** put `"expect": { "popup": { "switchTo": true } }` on the click; later steps then act in the new tab. `switchTab` and `closeTab` move between tabs.
+- **A consent or login page on another origin (OAuth):** drive it as a visitor would (click the provider button, `switchTab` or follow the redirect, fill the consent form with `fill`, click Allow), then `assertUrl` that you are back on the app. A test provider on loopback is better than a real one.
+- **Prove "blocked" and also "not stuck":** a refusal check (a 429 notice, a disabled button) passes forever if the app locks up. Add a second check that the visitor can still do the next thing (the form accepts a later valid input, the page still navigates).
+- **A state that survives a failed run** (a record, a throttle): use `{{runId}}` in names so each run starts clean.
+- **A theme the app switches with its own toggle** is not changed by `env.colorScheme` or `emulateMedia`; click the toggle, then assert.
+
+### Variables: carry a value from one step to a later one
+
+`capture` reads one value off the page into a name; `{{name}}` in a later step uses it. `{{runId}}` is built in: a short
+unique text per run (also in the evidence run record), for names a spec creates (`"user-{{runId}}"`), so a failed run
+never leaves a record that blocks the next one.
+
+```json
+{ "op": "capture", "testId": "order-number", "from": "text", "as": "order" },
+{ "op": "click", "role": "link", "name": "Orders" },
+{ "op": "assertText", "check": "the order is listed", "testId": "latest-order", "contains": "{{order}}" }
+```
+
+- `from`: `text`, `value`, `count` (how many elements match; the value is the number as text) or `attribute` (with `attribute`).
+- Replaced only in: `goto.url`, `fill.value`, `type.value`, and `equals`/`contains` of `assertText`, `assertValue`, `assertAttribute`, `assertUrl`, `assertTitle`, `assertCookie`. Never in a target, `matches`, `check`, `name` or `hint`: page text must not become a selector or a pattern.
+- A name must be captured by an earlier step: `validate` reports a typo or a wrong order. Write `\{{name}}` for the literal text.
+- A `goto` that uses a captured value must stay on the app's origin. A value is cut at 1000 characters. A field that holds a credential is never captured. The evidence step record names the variable, not its value; a later check shows the value it compared, scrubbed like any other value. A text or value capture waits for the element like an assertion; `count` reads once and cannot be combined with `nth`.
+
+### Operations (51)
 
 | Op | Fields | Notes |
 |---|---|---|
@@ -131,6 +175,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `assertProperty` | target, `property` (dotted), `equals` | For example `validity.valueMissing`. Objects compare by content. |
 | `assertCss` | target, `property`, one of `equals` `contains` `matches` | Computed style. |
 | `assertCount` | target, `count` or `min`/`max` | No `nth`. |
+| `assertContrast` | target, `min?` (default 4.5) | WCAG contrast ratio of the element's text colour on its background. Plain colours only: a background image, a gradient or opacity makes the ratio unknowable, and then the check is a `review` claim (exit 3), never a pass. Check both colour schemes with `emulateMedia` when the app follows the system setting; an app with its own theme toggle needs a click on the toggle first. |
 | `assertUrl` `assertTitle` | `equals` or `contains` or `matches` | |
 | `assertStorage` | `area?` (`local` default, `session`), `key`, `path?`, one of `equals` `exists` | The value is parsed as JSON when it can be; `path` is dotted. Objects compare by content. |
 | `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. A cookie value is usually a session token: the check never records a value, expected or actual: only the length and, for `equals` and for the actual side, a short keyed fingerprint (HMAC-SHA-256 with a random key held only for the run) (`(cookie, 7 characters, hmac 1a2b3c4d)`), so two different values are told apart on a mismatch. A cookie that is not there fails, also with `not`; use `exists: false` to expect absence. |
@@ -144,6 +189,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `setStorage` | `area?`, `key`, `value` | A non-string value is stored as JSON, the form `assertStorage` reads back. The page must already be on the app (about:blank has no storage). |
 | `clearStorage` | `area?`, `key?` | One key, or the whole area. |
 | `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string with an offset such as `2030-06-15T12:00:00Z` or `+02:00`, a bare date = UTC midnight, or epoch ms; a time without an offset is rejected because it would depend on the runner's time zone), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
+| `capture` | target, `as`, `from` (`text` `value` `count` `attribute`), `attribute?` | Not an assertion: records no check. See Variables. |
 | `switchTab` | `index`, or one of `equals` `contains` `matches` | Moves the spec to another open tab. `index` counts the tabs that are open now, in the order they opened (0 = the oldest tab still open); the other form matches the tab's address. No such tab is a failed step. |
 | `closeTab` | | Closes the current tab and moves to the last one still open. The only tab cannot be closed. |
 
@@ -200,7 +246,7 @@ A signed JSON file, `receipts/<stamp>-<revision>.json`, small on purpose:
 | Field | Meaning |
 |---|---|
 | `verdict` | `PASS` every check passed and there was at least one; `FAIL` one or more failed; `ERROR` the run could not tell |
-| `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when |
+| `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when the receipt joined the chain (the end of the run; the evidence's `run` record holds its start) |
 | `totals` | `{checks, passed, failed, omitted}`. `omitted` counts failed checks not listed below (the first 20 are listed). |
 | `checks` | **Failed checks only**: `{step, name, pass, expected, actual, hint?, error?}`, long values clipped to 200 characters |
 | `review` | `{total, items}`: claims from `review` steps that need a human (the first 20 as `{step, name, note?}`). Receipts from before this field have none. |

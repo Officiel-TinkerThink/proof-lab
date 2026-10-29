@@ -1,0 +1,71 @@
+// validate: parse and check specs without running them, so an author fixes field names in seconds.
+// Usage: node src/validate.js --spec <file.json> [--spec <file.json> ...] [--json]
+// Exit 0 when every spec is valid, 2 when one cannot be read or is invalid (the same as a run that refuses it).
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
+import { runCli } from "./cli.js";
+import { scrubText } from "./receipt-scrub.js";
+import { OPS, validateSpec } from "./spec/schema.js";
+import { isMainModule, parseCli } from "./spec/util.js";
+
+const CLI_OPTIONS = { spec: { type: "string", multiple: true }, json: { type: "boolean" } };
+
+// Warnings are advice, not errors: they never change the exit code. An absence check ("not shown", count 0) also passes
+// when the page never rendered the area, so it needs a positive check before it to mean anything.
+const isAssertion = step => step && typeof step === "object" && OPS[step.op]?.assertion === true;
+// A goto that expects a status also proves the page answered, so it counts as the positive check.
+const isPositiveCheck = step => step && typeof step === "object" && step.op === "goto" && step.status !== undefined && step.optional !== true;
+const isAbsence = step => step.not === true
+  || (step.op === "assertCount" && step.count === 0)
+  || (step.op === "assertVisible" && step.visible === false)
+  || (step.op === "assertState" && step.state === "detached")
+  || (step.op === "assertAttribute" && step.absent === true);
+export function lintSpec(spec) {
+  const warnings = [];
+  let positive = false;
+  (Array.isArray(spec?.steps) ? spec.steps : []).forEach((step, index) => {
+    if (isPositiveCheck(step)) positive = true;
+    if (!isAssertion(step)) return;
+    if (!isAbsence(step)) positive = true;
+    else if (!positive) warnings.push(`steps[${index}] (${step.op}) checks that something is absent, with no positive check before it: it also passes when the page never rendered that area`);
+  });
+  return warnings;
+}
+
+async function check(specPath) {
+  const file = scrubText(basename(specPath));
+  let spec;
+  try {
+    spec = JSON.parse(await readFile(specPath, "utf8"));
+  } catch (error) {
+    // A JSON.parse message can quote the file's own bytes, so (as in run-spec.js) only the kind of failure is reported.
+    const kind = error instanceof SyntaxError ? "parsed as JSON" : `read (${error?.code ?? "error"})`;
+    return { file, valid: false, problems: [`cannot be ${kind}`] };
+  }
+  const problems = validateSpec(spec).map(problem => scrubText(problem));
+  const warnings = problems.length === 0 ? lintSpec(spec).map(warning => scrubText(warning)) : [];
+  return { file, valid: problems.length === 0, problems, warnings, steps: Array.isArray(spec?.steps) ? spec.steps.length : 0 };
+}
+
+export async function main(args) {
+  const values = parseCli(args, CLI_OPTIONS);
+  if (!values.spec?.length) throw new Error("--spec <file.json> is required");
+  const results = [];
+  for (const specPath of values.spec) results.push(await check(specPath));
+  if (values.json) {
+    console.log(JSON.stringify(results, null, 2));
+  } else {
+    for (const result of results) {
+      if (result.valid) {
+        console.log(`valid ${result.file} (${result.steps} steps)`);
+        for (const warning of result.warnings) console.log(`  warning: ${warning}`);
+      } else {
+        console.log(`INVALID ${result.file}`);
+        for (const problem of result.problems) console.log(`  ${problem}`);
+      }
+    }
+  }
+  return results.every(result => result.valid) ? 0 : 2;
+}
+
+if (isMainModule(import.meta.url)) await runCli(() => main(process.argv.slice(2)));

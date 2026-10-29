@@ -2,10 +2,11 @@
 // Assertions never throw: they poll, then record a check with the last value read.
 import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { addressLabel, hideQuery, maskValue, redactSecrets } from "./evidence.js";
+import { addressLabel, hideQuery, isSensitiveStep, maskValue, redactSecrets } from "./evidence.js";
 import { hasTarget, locate } from "./locate.js";
 import { poll } from "./poll.js";
 import { defined, pick, readPath } from "./util.js";
+import { MAX_VALUE_CHARS } from "./vars.js";
 
 // Reads inside a poll are short so the poll, not Playwright, decides how long to keep trying.
 const READ_TIMEOUT_MS = 250;
@@ -83,6 +84,41 @@ const STATE_READERS = {
     observer.observe(element);
   }), undefined, { timeout: READ_TIMEOUT_MS }),
 };
+
+// Runs in the page. The WCAG ratio of the element's text colour over what is behind it, or why that cannot be known.
+// Only plain rgb()/rgba() colours with no image, gradient or opacity in the way are computed: a guess would be a false pass.
+function contrastInPage(element) {
+  const parse = text => {
+    const match = /^rgba?\(\s*([\d.]+)[, ]+\s*([\d.]+)[, ]+\s*([\d.]+)(?:\s*[,/]\s*([\d.]+)(%)?)?\s*\)$/.exec(text);
+    if (!match) return null;
+    const alpha = match[4] === undefined ? 1 : Number(match[4]) / (match[5] ? 100 : 1);
+    return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]), a: alpha };
+  };
+  const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+  const light = ({ r, g, b }) => {
+    const channel = value => { const c = value / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  };
+  const layers = [];
+  for (let node = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (Number(style.opacity) < 1) return { reason: "an element has opacity below 1" };
+    if (style.backgroundImage !== "none") return { reason: "the background is an image or gradient" };
+    const color = parse(style.backgroundColor);
+    if (!color) return { reason: `the background colour ${style.backgroundColor} is not a plain rgb colour` };
+    if (color.a > 0) layers.push(color);
+    if (color.a === 1) break;
+  }
+  // No opaque background: the browser paints the canvas, white unless the page opts into a colour scheme (then it may be dark).
+  if (layers.at(-1)?.a !== 1 && getComputedStyle(document.documentElement).colorScheme !== "normal") return { reason: "the page sets color-scheme, so the canvas colour is not known" };
+  let background = layers.at(-1)?.a === 1 ? layers.pop() : { r: 255, g: 255, b: 255, a: 1 };
+  while (layers.length > 0) background = over(layers.pop(), background);
+  const text = parse(getComputedStyle(element).color);
+  if (!text) return { reason: "the text colour is not a plain rgb colour" };
+  const foreground = over(text, background);
+  const [bright, dark] = [light(foreground), light(background)].sort((a, b) => b - a);
+  return { ratio: (bright + 0.05) / (dark + 0.05) };
+}
 
 const toFile = (file, specDir) => {
   if (typeof file === "string") return isAbsolute(file) ? file : resolve(specDir, file);
@@ -171,6 +207,33 @@ export const STEPS = {
     else await ctx.page.mouse.wheel(...by);
   },
 
+  // Reads one value into a variable. It records no check: a read that fails (no element) fails the step like an action.
+  async capture(ctx, step) {
+    // A value kept in a variable can reach a later step's expectation, so a credential field is never captured.
+    if (isSensitiveStep({ ...step, op: step.from === "attribute" ? "assertAttribute" : "assertValue" })) {
+      throw new Error("capture does not read a field that holds a credential");
+    }
+    let value;
+    if (step.from === "count") {
+      value = String(await strict(ctx, step).count()); // read once: 0 is a real answer, so there is nothing to wait for
+    } else {
+      // Waits for the element like an assertion does (a page that renders the value late is not a failure).
+      const read = { timeout: READ_TIMEOUT_MS };
+      const result = await poll(async () => {
+        const locator = await existing(ctx, step);
+        let found;
+        if (step.from === "text") found = (await locator.innerText(read)).trim();
+        else if (step.from === "value") found = await locator.inputValue(read);
+        else found = await locator.getAttribute(step.attribute, read);
+        if (found === null) throw new Error(`attribute "${step.attribute}" is not set`);
+        return { pass: true, actual: found };
+      }, budget(ctx, step));
+      if (!result.pass) throw new Error(result.error ?? "element not found");
+      value = result.actual;
+    }
+    ctx.vars.set(step.as, value.length > MAX_VALUE_CHARS ? value.slice(0, MAX_VALUE_CHARS) : value);
+  },
+
   // Assertions
   async assertText(ctx, step) {
     await textAssertion(ctx, step, async () => {
@@ -243,6 +306,27 @@ export const STEPS = {
     });
   },
   // The match sees the whole address; the record shows origin and path only (a code or token may be in the query).
+  async assertContrast(ctx, step) {
+    const wanted = step.min ?? 4.5;
+    let unknown = null;
+    const result = await poll(async () => {
+      const read = await (await existing(ctx, step)).evaluate(contrastInPage, undefined, { timeout: READ_TIMEOUT_MS });
+      unknown = read.ratio === undefined ? read.reason : null;
+      if (unknown !== null) return { pass: true, actual: null }; // nothing to wait for: the ratio is not computable
+      // The bar is compared with the exact ratio; the shown value is cut to two decimals.
+      // Cut, not rounded. The 1e-9 only absorbs binary-float noise (4.57 held as 4.5699999...), and it is dropped when it
+      // would move the shown value across the bar: a value that fails never reads as equal to the bar.
+      const cut = Math.floor(read.ratio * 100) / 100;
+      const nudged = Math.floor(read.ratio * 100 + 1e-9) / 100;
+      return { pass: step.not ? read.ratio < wanted : read.ratio >= wanted, actual: (nudged >= wanted) === (read.ratio >= wanted) ? nudged : cut };
+    }, budget(ctx, step));
+    // A ratio that cannot be computed is a claim for a human, not a pass and not a fail.
+    if (unknown !== null && result.error === undefined) {
+      ctx.reviews.push({ step: ctx.index, name: redactSecrets(step.check ?? `step ${ctx.index}: contrast`), note: `contrast could not be computed: ${unknown}` });
+      return;
+    }
+    ctx.record(step, result.pass, step.not ? { not: `contrast >= ${wanted}` } : `contrast >= ${wanted}`, result.actual ?? null, result.error);
+  },
   async assertUrl(ctx, step) { await textAssertion(ctx, step, async () => ctx.page.url(), hideQuery); },
   async assertTitle(ctx, step) { await textAssertion(ctx, step, () => ctx.page.title()); },
   async assertStorage(ctx, step) {
