@@ -9,7 +9,7 @@ import { specsInDir } from "../src/run-spec.js";
 import { OPS, validateSpec } from "../src/spec/schema.js";
 import { errorDetail } from "../src/spec/util.js";
 import { substituteStep } from "../src/spec/vars.js";
-import { TIMEOUT, explain, page, withRun } from "./spec-helpers.mjs";
+import { TIMEOUT, explain, failedChecks, page, withRun } from "./spec-helpers.mjs";
 
 const LAB = join(fileURLToPath(new URL("..", import.meta.url)), "src", "lab.js");
 const lab = args => spawnSync(process.execPath, [LAB, ...args], { encoding: "utf8", timeout: 60000 });
@@ -125,19 +125,23 @@ test('variables: capture reads text and count into later steps; the evidence hol
   });
 });
 
-test('errorDetail: a strict-mode error keeps the first matched elements, shortened, with values hidden', () => {
+test('errorDetail: only the first line of an error is kept, never the markup Playwright quotes after it', () => {
   const message = 'locator.click: Error: strict mode violation: getByRole(\'button\') resolved to 6 elements:\n'
-    + '    1) <button id="a">Save</button> aka getByRole(\'button\', { name: \'Save\' })\n'
-    + '    2) <input value="hunter2" type="text"/> aka locator(\'#b\')\n'
-    + [3, 4, 5, 6].map(n => `    ${n}) <button>${n}</button> aka x`).join('\n') + '\nCall log:\n  - waiting';
+    + '    1) <input value="hunter2" type="text"/> aka locator(\'#b\')\nCall log:\n  - waiting';
   const detail = errorDetail(new Error(message));
-  assert.match(detail, /resolved to 6 elements: <button id=a> \| <input> \| <button> \| <button>$/);
-  assert.ok(!detail.includes('hunter2') && !detail.includes('Save'), 'only tag and plain identifiers are kept, never values or text');
-  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input name="q" value="a&quot;b hunter2" data-testid="x y"/> aka z')), /<input name=q>$/);
-  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <p>see name="hunter2" id="y"</p> aka z')), /<p>$/, 'text inside the element is never read');
-  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input value="a" name="q" title="a"b" data-testid="t-1"/> aka z')), /<input name=q>$/, 'a quote inside a value stops the scan');
-  assert.match(errorDetail(new Error('strict mode violation: x\n    1) <input id="a" type="text" name="q"/> aka z')), /<input id=a name=q>$/);
+  assert.match(detail, /resolved to 6 elements:$/);
+  assert.ok(!detail.includes('hunter2'));
   assert.equal(errorDetail(new Error('plain\nsecond line')), 'plain');
+});
+
+test('an ambiguous target lists the first matches by tag and plain identifiers, read from the page', TIMEOUT, async () => {
+  const steps = [{ op: 'click', role: 'button', check: 'ambiguous click', timeout: 2000 }];
+  await withRun(page('/fixtures/network.html', steps, { noPageErrors: true }), async receipt => {
+    assert.equal(receipt.verdict, 'FAIL', explain(receipt));
+    const failed = failedChecks(receipt)[0];
+    assert.match(String(failed.error), /strict mode violation.*<button id=load> \| <button id=slow> \| <button id=broken> \| <button id=echo>$/s, explain(receipt));
+    assert.ok(!String(failed.error).includes('Load items'), 'the text of the page is not listed');
+  });
 });
 
 test('list: shows receipts newest first, counts them, marks an unreadable file; a missing folder is an error', async () => {

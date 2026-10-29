@@ -11,14 +11,14 @@ import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile } from "./chain.js";
 import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactClip, redactSecrets, scrubRecord, specLabel, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
-import { describeTarget } from "./spec/locate.js";
+import { describeMatches, describeTarget, hasTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceipt, scrubReceiptFile, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
-import { substituteStep } from "./spec/vars.js";
+import { seedVars, substituteStep } from "./spec/vars.js";
 import { bounded, errorDetail, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 export { validateSpec };
@@ -51,7 +51,7 @@ function labelOf(step, index) {
 export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks, runId = randomBytes(4).toString("hex") }) {
   const ctx = {
     // A tab the app closed stays the current page: a later step on it fails honestly instead of silently reading another tab.
-    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [], vars: new Map([["runId", runId]]),
+    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [], vars: seedVars(runId),
     record(step, pass, rawExpected, rawActual, rawError) {
       // What the page or the spec shows can hold a credential (an address, a field value, an error that quotes one):
       // every value is scrubbed here, once, before it can reach the receipt or the evidence file.
@@ -111,7 +111,12 @@ export async function runStep(ctx, step) {
       record.skipped = firstLine(error);
     } else {
       const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op}${target ? ` ${target}` : ""}).`;
-      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, errorDetail(error));
+      let detail = errorDetail(error);
+      if (/strict mode violation/.test(detail) && hasTarget(step)) {
+        const matches = await describeMatches(ctx.page, step);
+        if (matches.length > 0) detail = `${detail} ${matches.join(" | ")}`;
+      }
+      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, detail);
     }
   } finally {
     for (const cleanup of cleanups) cleanup();

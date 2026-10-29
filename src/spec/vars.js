@@ -4,7 +4,9 @@
 // A literal {{name}} is written \{{name}}. Anything that is not exactly {{identifier}} is left alone.
 
 export const VAR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
-export const BUILTIN_VARS = ["runId"];
+// The one place a built-in is named: the run's starting variables, and the names a capture may not take.
+export const seedVars = runId => new Map([["runId", runId]]);
+export const BUILTIN_VARS = [...seedVars("").keys()];
 export const MAX_CAPTURES = 20;
 export const MAX_VALUE_CHARS = 1000;
 

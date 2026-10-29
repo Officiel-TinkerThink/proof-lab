@@ -5,31 +5,9 @@ import { parseArgs } from "node:util";
 
 export const firstLine = error => (error instanceof Error ? error.message : String(error)).split("\n")[0];
 
-// The first line, and for a Playwright "strict mode violation" the first few matched elements it lists after it, so an
-// author sees which elements the target matched. Each element is reduced to its tag and its id, data-testid and name when
-// those are plain identifiers; nothing else of the page's markup (values, text) is kept.
-const MAX_LISTED_ELEMENTS = 4;
-const IDENTIFIER_ATTRIBUTES = ["id", "data-testid", "name"];
-const describeElement = line => {
-  const opening = /^\s*\d+\) <([a-zA-Z][a-zA-Z0-9-]{0,30})/.exec(line);
-  if (!opening) return "<element>";
-  // Attributes are read one after the other from the end of the tag name and the scan stops at the first thing that is not
-  // name="value": text inside the element, or a quote inside a value, is never looked at.
-  const attributes = [];
-  let rest = line.slice(opening[0].length);
-  for (let match = /^\s+([A-Za-z][A-Za-z0-9:_-]*)="([^"]*)"/.exec(rest); match && attributes.length < 12; match = /^\s+([A-Za-z][A-Za-z0-9:_-]*)="([^"]*)"/.exec(rest)) {
-    if (IDENTIFIER_ATTRIBUTES.includes(match[1]) && /^[A-Za-z0-9_-]{1,40}$/.test(match[2])) attributes.push(`${match[1]}=${match[2]}`);
-    rest = rest.slice(match[0].length);
-  }
-  return `<${[opening[1], ...attributes].join(" ")}>`;
-};
-export function errorDetail(error) {
-  const lines = (error instanceof Error ? error.message : String(error)).split("\n");
-  if (!/strict mode violation/.test(lines[0])) return lines[0];
-  const listed = lines.slice(1).filter(line => /^\s*\d+\) /.test(line)).slice(0, MAX_LISTED_ELEMENTS)
-    .map(describeElement);
-  return listed.length === 0 ? lines[0] : `${lines[0]} ${listed.join(" | ")}`;
-}
+// Only the first line of an error: the rest of a Playwright message quotes the page's markup. A target that matched
+// several elements is listed from the page itself instead (locate.js, describeMatches).
+export const errorDetail = firstLine;
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
