@@ -17,6 +17,7 @@ description: Verify browser-visible work before saying it is done. Write or upda
    Check a spec for mistakes first, without a browser: `node src/lab.js validate --spec specs/<feature>.json` (it also warns about absence checks with no positive check before them). `node src/lab.js ops` prints a one-page list of every op and field. `node src/lab.js list` lists the receipts, newest first.
    Several features: repeat `--spec` (`--spec specs/a.json --spec specs/b.json`), or give a whole folder with `--spec-dir specs`; the last line says "N of M specs run". They run concurrently, up to half the machine's workers (`--jobs N` for fewer), each with its own receipt; one broken spec does not stop the others. Separate `run` commands on the same receipts directory are also safe at the same time.
 5. **Read the gate, not the log:** `node src/lab.js status --spec specs/<feature>.json --key-file <key>`.
+   The run prints the receipt as `<dir>/<file name>`: the folder is hidden on purpose, and you never need to type it. Name the file instead: `node src/lab.js show --receipt <file name>` (or `--receipt latest`); `node src/lab.js list` shows the names. The commands look in the default receipts folder.
 6. **Investigate only what failed:** `node src/lab.js show` reads the evidence of a receipt (failing step, console, page snapshot, screenshot). The receipt is a summary on purpose.
 
 ## Spec pitfalls (found in use)
