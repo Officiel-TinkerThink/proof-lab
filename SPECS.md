@@ -38,9 +38,15 @@ was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exit
 storage, cache and pages (checked: a cookie set in one context is not seen by another, and a cacheable script is fetched once per
 context), but not its own process tree. It is faster and lighter (about twice the specs per second and half to two thirds of the
 Chromium memory on short specs, measured on one developer machine) and has two costs. The failure domain is shared: if the browser dies, every
-run on it ends ERROR ("the browser stopped during this run"), never FAIL or PASS, and the other browsers' runs go on. And the
-receipt says it: the browser string of the evidence reads `chromium <version> (shared browser, own context)`, so no receipt claims an
-independent browser it did not have. Whether a shared browser is acceptable evidence for your release is for the validation owner
+run on it ends ERROR ("the browser or one of its pages stopped during this run"), never FAIL or PASS, and the other browsers' runs go on.
+The loss is noticed at once (the run's current step is abandoned the moment the browser disconnects or the page crashes, in under
+a second in the tests, where it used to end at the step's own deadline, 18 to 21 s), and the checks recorded before the loss are not
+counted. And the receipt says it: the browser string of the evidence reads `chromium <version> (shared browser, own context)`, and
+the signed `next` text of the receipt carries the line "Browser: this run shared one browser with other runs, in its own context;
+it is not an independent browser.", so no receipt claims an independent browser it did not have. Measured as isolated between two
+contexts of one Chromium: cookies, localStorage, sessionStorage, IndexedDB, the Cache API, service workers, BroadcastChannel
+messages, reused HTTP credentials, granted permissions, popups and the HTTP cache. Not isolatable and not measured: the shared browser,
+GPU and network processes and the DNS cache (web research found no primary source on these either). Whether a shared browser is acceptable evidence for your release is for the validation owner
 to decide; leave the flag off where an independent browser per run is what the receipt must show. A browser that disappears under
 any run, shared or not, is ERROR, never a verdict on the app.
 

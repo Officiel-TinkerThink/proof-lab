@@ -1,7 +1,7 @@
 // queue: leave a batch of specs and poll for it. `submit` writes a job and returns its id at once; a background worker runs the
 // job (all its specs concurrently, within the machine-wide slots of slots.js) and writes the result into the job; `status`
 // reads it. Receipts and evidence are written by the runs exactly as `run` writes them: a job file is bookkeeping, not evidence.
-// Usage: node src/lab.js queue submit (--spec <file.json> ... | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--no-worker] [--json]
+// Usage: node src/lab.js queue submit (--spec <file.json> ... | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--share-browser N] [--no-worker] [--json]
 //        node src/lab.js queue status --id <job id> [--receipts <dir>] [--json]
 //        node src/lab.js queue list [--state queued|running|done|cancelled|interrupted] [--limit N] [--receipts <dir>] [--json]
 //        node src/lab.js queue cancel --id <job id> [--receipts <dir>]

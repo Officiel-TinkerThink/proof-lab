@@ -10,8 +10,9 @@ export const MAX_SHARE = 32; // contexts per browser; beyond this a single page-
 
 export const launchBrowser = () => chromium.launch({ headless: true, env: environmentWithoutKey() });
 
-// lease() resolves { browser, release, lost }: `lost()` is true once the browser behind the lease has disconnected (crashed or
-// was killed), so a run can tell "the app failed" from "the browser went away". release() gives the place back, once.
+// lease() resolves { browser, release, lost, whenLost }: `lost()` is true once the browser behind the lease has disconnected
+// (crashed or was killed), so a run can tell "the app failed" from "the browser went away"; `whenLost` is a promise that settles
+// at that moment, to abandon work waiting on a dead page. release() gives the place back, once.
 // A browser is filled up to `perBrowser` leases before the next is launched (fewest browsers, most sharing); a browser that
 // disconnected is dropped and never leased again. close() closes every browser; leases still out then count as lost.
 export function createBrowserPool({ perBrowser, launch = launchBrowser } = {}) {
@@ -21,11 +22,12 @@ export function createBrowserPool({ perBrowser, launch = launchBrowser } = {}) {
 
   const start = () => {
     const entry = { leases: 0, dead: false, browser: null };
+    entry.died = new Promise(resolve => { entry.markDead = () => { entry.dead = true; entries.delete(entry); resolve(); }; });
     entry.ready = launch().then(browser => {
       entry.browser = browser;
-      browser.on("disconnected", () => { entry.dead = true; entries.delete(entry); });
+      browser.on("disconnected", entry.markDead);
       return browser;
-    }, error => { entry.dead = true; entries.delete(entry); throw error; });
+    }, error => { entry.markDead(); throw error; });
     entries.add(entry);
     return entry;
   };
@@ -40,7 +42,7 @@ export function createBrowserPool({ perBrowser, launch = launchBrowser } = {}) {
     try {
       const browser = await entry.ready;
       if (entry.dead) throw new Error("the shared browser stopped before the run could start");
-      return { browser, release, lost: () => entry.dead };
+      return { browser, release, lost: () => entry.dead, whenLost: entry.died };
     } catch (error) {
       release();
       throw error;

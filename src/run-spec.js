@@ -1,6 +1,6 @@
 // run-spec: drive an app through a JSON spec, record every check, write a signed summary receipt and an evidence file.
 // Verdicts: PASS (exit 0), FAIL (exit 1: a check failed), ERROR (exit 2: the run could not finish).
-// Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--json]
+// Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--share-browser N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
@@ -42,6 +42,8 @@ const EVIDENCE_BOOKKEEPING = ["type", "spec", "at", "mime", "base64"];
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
 export const stepLimits = { graceMs: 20000 }; // an object so a test can shorten it
+const LOST = Symbol("browser lost");
+export const SHARED_BROWSER_NOTE = "Browser: this run shared one browser with other runs, in its own context; it is not an independent browser.";
 
 // "check" names the step in the receipt. "name" without a role is the older spelling of it.
 function labelOf(step, index) {
@@ -232,6 +234,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
   let server = null;
   let closeSession = null;
   let browserLost = () => false;
+  let browserShared = false;
   let shot = null;
   let browserVersion = null;
   let completed = false;
@@ -274,6 +277,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
     });
     closeSession = session.close;
     browserLost = session.lost;
+    browserShared = session.shared;
+    const lostSignal = session.whenLost.then(() => LOST);
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
@@ -281,9 +286,16 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
     for (const [i, step] of spec.steps.entries()) {
       ctx.index = i + 1;
       const first = checks.length;
-      stepRecords.push(await runStep(ctx, step));
+      // A step polling a dead page would only stop at its own deadline (its budget plus a grace of 20 s): when the browser goes
+      // away the step is abandoned at once (its late writes are made no-ops by the epoch) and the run ends as ERROR.
+      const outcome = await Promise.race([runStep(ctx, step), lostSignal]);
+      if (outcome === LOST) {
+        ctx.epoch += 1;
+        throw new Error("the browser stopped");
+      }
+      stepRecords.push(outcome);
       const failedNow = checks.slice(first).some(check => !check.pass);
-      if (failedNow && contextRecords.filter(record => record.type === "context").length < MAX_FAILURE_CONTEXTS) {
+      if (failedNow && !browserLost() && contextRecords.filter(record => record.type === "context").length < MAX_FAILURE_CONTEXTS) {
         const pictured = contextRecords.some(record => record.type === "screenshot");
         const captured = await bounded(captureContext(ctx.page, ctx.index, !pictured), 12000, "capturing the page")
           .catch(error => [{ type: "context", step: ctx.index, url: null, title: null, aria: null, ariaError: firstLine(error) }]);
@@ -309,10 +321,14 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
 
   // A browser that went away under the run (crashed, killed, or took its pool-mates down) is no verdict on the app: whatever the
   // steps then reported ("target closed" as a failed check) is not evidence, so the run is ERROR, never FAIL or PASS.
+  // The checks recorded are dropped from the receipt: a failed one after the loss is "target closed", not a finding, and a run
+  // that cannot tell has no FAIL to show. The evidence keeps every step as it ran.
   if (browserLost()) {
     completed = false;
+    const dropped = checks.length;
+    checks.length = 0;
     receipt.verdict = "ERROR";
-    receipt.error = `run failed: the browser stopped during this run, so nothing it showed is evidence${receipt.error ? ` (${receipt.error})` : ""}`;
+    receipt.error = `run failed: the browser or one of its pages stopped during this run (crashed or was killed), so nothing it showed is evidence${dropped > 0 ? ` (${dropped} checks recorded before it stopped are not counted)` : ""}`;
   }
 
   if (completed) {
@@ -353,6 +369,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
   } else {
     receipt.next = [receipt.error ?? "Unknown error.", "Can't tell is not the same as broken: run it again once the app is stable."];
   }
+  // `next` is signed, so this says in the receipt itself (not only in the evidence file, which can be pruned) that the browser was shared.
+  if (browserShared) receipt.next.push(SHARED_BROWSER_NOTE);
 
   // Choke point: the receipt and every evidence record are scrubbed here, once, whichever code path produced the text
   // (a step error, a hint, a review note, a context, a page-supplied revision). Redaction at the sources stays as a second layer.
