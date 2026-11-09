@@ -47,25 +47,38 @@ export function readMachine(previous) {
   return { reading: { freeMemory: freemem(), cpuBusy: previous ? cpuBusyBetween(previous, now) : 0, load1: loadavg()[0], cores: now.length || 1 }, cpus: now };
 }
 
-// admit(running) resolves when one more run may start. With nothing running it resolves at once (the pool must always make
-// progress); otherwise it waits for headroom, one admission at a time with a settle pause after each, so a burst of
-// finished runs cannot all start on the same stale numbers.
-export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = RUN_MEMORY_BYTES, onWait = () => {} } = {}) {
+// admit(running) resolves, with a function that gives the run's slot back, when one more run may start.
+// Headroom: with none of this pool's runs in flight it is not waited for (the pool must always make progress); otherwise it
+// waits for memory and CPU, one admission at a time with a settle pause after each, so a burst of finished runs cannot all
+// start on the same stale numbers.
+// Slot: `acquire()` (see slots.js) resolves to a release function, or null while every slot of the machine is held by runs of
+// other processes; it is waited for, since those runs end or their holders are reclaimed. The default has no limit.
+export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = RUN_MEMORY_BYTES, onWait = () => {}, acquire = async () => () => {} } = {}) {
   let gate = Promise.resolve();
   const admit = running => {
     const turn = gate.then(async () => {
       for (;;) {
-        if (running() === 0) return;
-        // CPU is measured over a fresh window right now: a reading kept from minutes ago would average a spike away.
-        const baseline = read(null).cpus;
-        await sleep(SAMPLE_MS);
-        if (running() === 0) return; // the last run ended during the sample: nothing is running, so do not hold this one back
-        const verdict = headroom(read(baseline).reading, perRun);
-        if (verdict.ok) break;
-        onWait(verdict.reason);
+        if (running() > 0) {
+          // CPU is measured over a fresh window right now: a reading kept from minutes ago would average a spike away.
+          const baseline = read(null).cpus;
+          await sleep(SAMPLE_MS);
+          if (running() > 0) { // else the last run ended during the sample: nothing is running, so do not hold this one back
+            const verdict = headroom(read(baseline).reading, perRun);
+            if (!verdict.ok) {
+              onWait(verdict.reason);
+              await sleep(POLL_MS);
+              continue;
+            }
+          }
+        }
+        const release = await acquire();
+        if (release) {
+          if (running() > 0) await sleep(SETTLE_MS);
+          return release;
+        }
+        onWait("slots");
         await sleep(POLL_MS);
       }
-      await sleep(SETTLE_MS);
     });
     gate = turn.catch(() => {});
     return turn;

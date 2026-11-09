@@ -16,7 +16,7 @@ node src/show.js    --key-file <key> [--failures|--steps|...]   what happened in
 node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does the page offer a spec? (no receipt, no key)
 ```
 
-`node src/lab.js <run|status|doctor|show|look|validate> ...` is the same set behind one entry point.
+`node src/lab.js <run|status|doctor|show|look|validate|queue> ...` is the same set behind one entry point.
 
 The key is read from a file only (`--key-file`, mode 0600 on Linux and macOS, at least 32 bytes). `PROOF_LAB_KEY` in the
 environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or `PROOF_LAB_RECEIPTS` says otherwise.
@@ -35,6 +35,29 @@ was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exit
 
 Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
 the chain, inside the lock, so whichever run finishes first comes first and no run refuses another.
+
+The ceiling is machine-wide, not per command: every run takes one of `maxJobs` slot files (a `proof-lab-slots` folder under the
+OS temp folder, or `PROOF_LAB_SLOTS_DIR`), so separate `run` commands and the queue worker below add up to the same limit. A run
+waits for a free slot; a slot whose process died is taken over (by process id, and any slot older than 6 hours is treated as a
+leak), and a slot is given back when the run ends.
+
+### Leave it and poll (the queue)
+
+For a batch nobody wants to wait for, `node src/lab.js queue ...` (jobs live in `<receipts>/.queue/`, which no receipt command reads):
+
+| command | what it does |
+|---|---|
+| `queue submit (--spec f ... \| --spec-dir d) --key-file k [--jobs N] [--no-worker]` | writes a job, prints its id at once, and starts a background worker unless one is running |
+| `queue status --id <id> [--json]` | the job's state (`queued`, `running`, `done`, `cancelled`, `interrupted`), and when done each spec's verdict and receipt file. Exit: 4 not finished; once finished the same codes as `run` (0 pass, 1 fail, 2 error, 3 needs review) |
+| `queue list [--state s] [--limit N]` | the jobs, newest first |
+| `queue cancel --id <id>` | stops a job that is still queued (a running job cannot be cancelled) |
+| `queue work [--idle-exit seconds]` | the worker itself: runs queued jobs, several at once within the slots, and stops after 30 s (default) with nothing to do. `submit` starts one; run it by hand to restart one |
+
+The signing key is never stored in a job, only the path of the key file, which the worker reads when the job starts (the same 0600
+and `PROOF_LAB_KEY` rules as `run`). Receipts and evidence are written by the runs exactly as `run` writes them, so `status` (the
+gate), `list`, `show` and `doctor` see them as before; a job file is bookkeeping, not evidence. If the worker dies mid-job the job
+becomes `interrupted` and is not run again, because some of its specs may already have written receipts: look with `list` and
+submit it again. One worker runs per receipts directory.
 
 ## The loop
 

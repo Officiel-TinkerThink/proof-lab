@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
 import { createGovernor, maxJobs } from "./capacity.js";
+import { tryAcquireSlot } from "./slots.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
@@ -29,7 +30,7 @@ const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts"
 const EXIT = { PASS: 0, FAIL: 1, ERROR: 2 };
 // Every check passed but the spec listed claims only a human can judge: not "done", and not a failure either.
 export const EXIT_NEEDS_REVIEW = 3;
-const exitCodeOf = receipt => (receipt.verdict === "PASS" && receipt.review?.total > 0 ? EXIT_NEEDS_REVIEW : EXIT[receipt.verdict]);
+export const exitCodeOf = receipt => (receipt.verdict === "PASS" && receipt.review?.total > 0 ? EXIT_NEEDS_REVIEW : EXIT[receipt.verdict]);
 const MAX_CONSOLE_RECORDS = 500;
 const MAX_PAGE_ERRORS_KEPT = 100;
 const MAX_FAILURE_CONTEXTS = 5;
@@ -388,14 +389,18 @@ export async function inPool(items, jobs, work, { admit } = {}) {
   const running = () => inFlight;
   const worker = async () => {
     while (next < items.length) {
-      if (admit) await admit(running);
-      if (next >= items.length) break;
+      const release = admit ? await admit(running) : null; // a function that gives the run's slot back, if admit hands one out
+      if (next >= items.length) {
+        await release?.();
+        break;
+      }
       const i = next++;
       inFlight += 1;
       try {
         results[i] = await work(items[i]);
       } finally {
         inFlight -= 1;
+        await release?.();
       }
     }
   };
@@ -406,7 +411,10 @@ export async function inPool(items, jobs, work, { admit } = {}) {
 // Runs every spec, at most `jobs` at a time. Each run is independent: its own browser, app server and receipt, and one
 // that throws becomes an ERROR for that spec while the others go on. Results come back in the order of specPaths.
 export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs() } = {}) {
-  const { admit } = createGovernor();
+  // The slots are shared by every process on this machine (slots.js): separate commands and the queue worker add up to the
+  // same ceiling, whatever `jobs` each was given.
+  const slotLimit = maxJobs();
+  const { admit } = createGovernor({ acquire: () => tryAcquireSlot(slotLimit) });
   return inPool(specPaths, jobs, async specPath => {
     try {
       return await runSpec({ specPath, key, receiptsDir });
