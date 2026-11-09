@@ -11,7 +11,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -151,8 +151,13 @@ async function takeWorkerLock(receiptsDir) {
     await handle.close();
     // The lock is only ever refreshed or removed while it still names this process: a worker that was suspended long enough for
     // its lock to be taken over (the machine slept) must not write over, or delete, the new holder's lock.
-    const ours = async () => { const owner = await readWorkerLock(receiptsDir); return owner === null || owner.pid === process.pid; };
-    const give = () => rmSync(path, { force: true });
+    // A lock that cannot be read (empty, half written) is somebody else's mid-write, never ours: it is left alone.
+    const ours = async () => (await readWorkerLock(receiptsDir))?.pid === process.pid;
+    const give = () => {
+      try {
+        if (JSON.parse(readFileSync(path, "utf8")).pid === process.pid) rmSync(path, { force: true });
+      } catch { /* gone or not readable: not ours to remove */ }
+    };
     process.once("exit", give);
     let beating = Promise.resolve();
     const beat = setInterval(() => {
@@ -284,7 +289,12 @@ async function settleOrphans(receiptsDir) {
       continue;
     }
     if (job.state !== "running") { // it was filed, and the worker stopped before the move to done/: the result stands
-      const filed = await readJob(jobPath(receiptsDir, "done", id)).catch(() => null);
+      let filed;
+      try {
+        filed = await readJob(jobPath(receiptsDir, "done", id));
+      } catch {
+        continue; // cannot tell whether a result is already filed: leave it for the next settle rather than replace one
+      }
       if (filed) await rm(jobPath(receiptsDir, "running", id), { force: true }); // never replace a result already in done/
       else await renameWithRetry(jobPath(receiptsDir, "running", id), jobPath(receiptsDir, "done", id));
       continue;

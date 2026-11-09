@@ -90,6 +90,9 @@ function giveBackOnExit() {
   process.on("exit", () => { for (const path of held) { try { rmSync(path, { force: true }); } catch { /* the age and pid checks reclaim it */ } } });
 }
 
+const MAX_BLOCKED_IN_A_ROW = 30; // whole attempts (each tried every slot and was refused); the governor polls once a second
+let blockedInARow = 0;
+
 // A slot (a function that gives it back, once) or null when all `limit` slots are held. Never waits.
 export async function tryAcquireSlot(limit, dir = slotsDir()) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -120,6 +123,7 @@ export async function tryAcquireSlot(limit, dir = slotsDir()) {
         throw error;
       }
       await handle.close();
+      blockedInARow = 0;
       held.add(path);
       giveBackOnExit();
       let given = false;
@@ -139,7 +143,14 @@ export async function tryAcquireSlot(limit, dir = slotsDir()) {
       };
     }
   }
-  if (blocked && !seenHeld) throw blocked; // every slot refused with a permission error and none is held: waiting would never end
+  // Every slot refused with a permission-type error and none is held. A delete-pending file clears within moments, so that is
+  // waited out (the caller polls again); only a refusal that lasts is a real permission problem, which waiting never fixes.
+  if (blocked && !seenHeld) {
+    blockedInARow += 1;
+    if (blockedInARow >= MAX_BLOCKED_IN_A_ROW) throw blocked;
+  } else {
+    blockedInARow = 0;
+  }
   return null;
 }
 
