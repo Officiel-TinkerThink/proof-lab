@@ -109,13 +109,14 @@ test("a container's memory limit is the memory the runs are planned against, not
   assert.equal(memoryLimit({ total: 12 * GIB, constrained: 2 * GIB }), 2 * GIB);
   assert.equal(maxJobs(8, memoryLimit({ total: 12 * GIB, constrained: 2 * GIB })), 1, "2 GiB carries one run, not the eight the host's 12 GiB would");
   // No limit: Node reports an absurdly large constrained value (or none, or 0), and the machine's memory stands.
+  // `null`, not `undefined`: an explicit undefined would pick up the default, the live value of the machine the test runs on.
   assert.equal(memoryLimit({ total: 12 * GIB, constrained: 18446744073709552000 }), 12 * GIB);
-  assert.equal(memoryLimit({ total: 12 * GIB, constrained: undefined }), 12 * GIB);
+  assert.equal(memoryLimit({ total: 12 * GIB, constrained: null }), 12 * GIB);
   assert.equal(memoryLimit({ total: 12 * GIB, constrained: 0 }), 12 * GIB);
   // Free memory is what is free inside the limit: availableMemory() (2.1 GB in the container) rather than the host's 11.8 GiB.
   assert.equal(memoryAvailable({ free: 11 * GIB, available: 2 * GIB }), 2 * GIB);
   assert.equal(memoryAvailable({ free: 1 * GIB, available: 5 * GIB }), 1 * GIB);
-  assert.equal(memoryAvailable({ free: 3 * GIB, available: undefined }), 3 * GIB, "a Node without availableMemory() keeps the machine's number");
+  assert.equal(memoryAvailable({ free: 3 * GIB, available: null }), 3 * GIB, "a Node without availableMemory() keeps the machine's number");
   assert.ok(memoryLimit() > 0 && memoryAvailable() >= 0);
 });
 

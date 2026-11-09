@@ -25,6 +25,10 @@ environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or 
 
 `run` takes `--spec` more than once and runs the specs concurrently, asynchronously in one process: at most two runs per
 worker (`os.availableParallelism()`; a browser run mostly waits, so a core serves more than one), and no more than memory allows (about 1 GiB per run, 75% of the machine's memory).
+In a Docker container the limits of the container count, not the host's: `--cpus` and `--memory` are read (Node's
+`availableParallelism()`, `constrainedMemory()` and `availableMemory()`), so a container started with `--memory=3g --cpus=4` plans
+for 3 GiB and 4 cores (2 runs at once), not for the host. Tested on Ubuntu 24.04 with Node 24: the whole suite passes there as a
+normal user, and a 32-spec batch finishes all PASS with 1.5 GiB and 2 CPUs.
 A governor also holds each new run back while free memory is low, CPU use is above 85% or the load average per core is above
 1.25 (new runs are judged one at a time on CPU measured over a quarter-second window; one measurement serves the next few starts, each of which is counted as a core of CPU and a run's memory the measurement could not see yet, and it is taken again after half a second, so a burst cannot overload the machine); with nothing running it
 always lets one start, so the batch always finishes. `--jobs N` lowers the ceiling; a higher number is cut to it, with a note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
