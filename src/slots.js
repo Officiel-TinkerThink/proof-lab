@@ -5,13 +5,16 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, link, stat } from "node:fs/promises";
 import { rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 export const SLOT_MAX_AGE_MS = 6 * 60 * 60 * 1000; // no run lasts this long: a slot this old is a leak, whatever its process id says
-const HALF_WRITTEN_MS = 5000;                      // a slot file with no content yet is a holder mid-write, until it is this old
+const HALF_WRITTEN_MS = 5000;                      // a lock file with no content yet is a holder mid-write, until it is this old
 
-export const slotsDir = () => process.env.PROOF_LAB_SLOTS_DIR || join(tmpdir(), "proof-lab-slots");
+// One folder per user (and private to them on POSIX): on a shared temp folder another user's files cannot hold this user's slots.
+// The slots of two users on one machine are then counted apart; Windows keeps a temp folder per user anyway.
+const userKey = () => { try { return userInfo().username.replace(/[^A-Za-z0-9._-]/g, "_"); } catch { return "user"; } };
+export const slotsDir = () => process.env.PROOF_LAB_SLOTS_DIR || join(tmpdir(), `proof-lab-slots-${userKey()}`);
 
 export function processAlive(pid) {
   try {
@@ -31,14 +34,18 @@ async function readOwner(path) {
   }
 }
 
-// True when the slot's holder is gone and the file was removed (or was already gone); false when it is held.
-async function reclaimIfStale(path) {
+// True when the lock file's holder is gone and the file was removed (or was already gone); false when it is held. The holder
+// is gone when its process is, or when the file is older than `maxAgeMs` (a reused process id), or when it never got content
+// and is past the grace for a holder mid-write. A lock of another host is never reclaimed. Used for slots and the worker lock.
+export async function reclaimIfStale(path, { maxAgeMs = SLOT_MAX_AGE_MS } = {}) {
   const owner = await readOwner(path);
   if (!owner) {
     const info = await stat(path).catch(() => null);
     if (!info) return true;
     if (Date.now() - info.mtimeMs < HALF_WRITTEN_MS) return false;
-  } else if (processAlive(owner.pid) && Date.now() - owner.at < SLOT_MAX_AGE_MS) {
+  } else if (owner.host !== undefined && owner.host !== hostname()) {
+    return false;
+  } else if (processAlive(owner.pid) && Date.now() - owner.at < maxAgeMs) {
     return false;
   }
   // Take it out of the way under a name of our own first, then check it is still the file we judged: a fresh holder may
@@ -70,7 +77,7 @@ function giveBackOnExit() {
 
 // A slot (a function that gives it back, once) or null when all `limit` slots are held. Never waits.
 export async function tryAcquireSlot(limit, dir = slotsDir()) {
-  await mkdir(dir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
   for (let n = 0; n < limit; n += 1) {
     const path = join(dir, `slot-${n}.lock`);
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -96,8 +103,16 @@ export async function tryAcquireSlot(limit, dir = slotsDir()) {
       return async () => {
         if (given) return;
         given = true;
-        held.delete(path);
-        await rm(path, { force: true }).catch(() => {});
+        for (let attempt = 0; attempt < 4; attempt += 1) { // Windows: a scanner may hold the file for a moment
+          try {
+            await rm(path, { force: true });
+            held.delete(path);
+            return;
+          } catch {
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        }
+        // Still there: it stays in `held`, so the exit hook removes it, and a later holder reclaims it by process id.
       };
     }
   }

@@ -13,10 +13,14 @@ export const SETTLE_MS = 250;                    // a started run needs time to 
 export const SAMPLE_MS = 250;                    // the window the CPU is measured over at each admission
 export const POLL_MS = 1000;
 
-// The most runs worth planning for: one per worker, and no more than memory allows. At least one.
+// A browser run mostly waits (for the page, the network, the app), so a worker serves more than one run. The governor, not this
+// number, keeps the machine from being overloaded: it holds a new run back above CPU_BUSY_LIMIT or when memory runs short.
+export const RUNS_PER_WORKER = 2;
+
+// The most runs worth planning for: RUNS_PER_WORKER per worker, and no more than memory allows. At least one.
 export function maxJobs(parallelism = availableParallelism(), totalMemory = totalmem(), perRun = RUN_MEMORY_BYTES) {
   const byMemory = Math.floor((totalMemory * TOTAL_MEMORY_SHARE) / perRun);
-  return Math.max(1, Math.min(parallelism, byMemory));
+  return Math.max(1, Math.min(parallelism * RUNS_PER_WORKER, byMemory));
 }
 
 // Busy share (0..1) of all CPUs between two cpus() readings.
@@ -55,7 +59,11 @@ export function readMachine(previous) {
 // other processes; it is waited for, since those runs end or their holders are reclaimed. The default has no limit.
 export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = RUN_MEMORY_BYTES, onWait = () => {}, acquire = async () => () => {} } = {}) {
   let gate = Promise.resolve();
-  const admit = running => {
+  // Runs this governor has admitted and not yet seen released. A governor shared by several pools (the queue worker's jobs)
+  // counts all of them, so "nothing is running" means nothing, not just nothing in one pool.
+  let active = 0;
+  const admit = ownRunning => {
+    const running = () => Math.max(ownRunning(), active);
     const turn = gate.then(async () => {
       for (;;) {
         if (running() > 0) {
@@ -74,7 +82,14 @@ export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = R
         const release = await acquire();
         if (release) {
           if (running() > 0) await sleep(SETTLE_MS);
-          return release;
+          active += 1;
+          let given = false;
+          return async () => {
+            if (given) return;
+            given = true;
+            active -= 1;
+            await release();
+          };
         }
         onWait("slots");
         await sleep(POLL_MS);

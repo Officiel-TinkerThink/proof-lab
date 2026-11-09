@@ -410,11 +410,15 @@ export async function inPool(items, jobs, work, { admit } = {}) {
 
 // Runs every spec, at most `jobs` at a time. Each run is independent: its own browser, app server and receipt, and one
 // that throws becomes an ERROR for that spec while the others go on. Results come back in the order of specPaths.
-export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs() } = {}) {
-  // The slots are shared by every process on this machine (slots.js): separate commands and the queue worker add up to the
-  // same ceiling, whatever `jobs` each was given.
+// The slots are shared by every process on this machine (slots.js): separate commands and the queue worker add up to the
+// same ceiling, whatever `jobs` each was given. One governor may be shared by several runSpecs calls (the queue worker does).
+export function runGovernor() {
   const slotLimit = maxJobs();
-  const { admit } = createGovernor({ acquire: () => tryAcquireSlot(slotLimit) });
+  return createGovernor({ acquire: () => tryAcquireSlot(slotLimit) });
+}
+
+export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs(), governor = runGovernor() } = {}) {
+  const { admit } = governor;
   return inPool(specPaths, jobs, async specPath => {
     try {
       return await runSpec({ specPath, key, receiptsDir });

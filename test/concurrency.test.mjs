@@ -94,11 +94,12 @@ test("many writers in one process, each with its own start stamp, all seal into 
 
 const GIB = 1024 ** 3;
 
-test("maxJobs is one per worker, bounded by memory, at least one", () => {
-  assert.equal(maxJobs(16, 64 * GIB), 16);
+test("maxJobs is two per worker, bounded by memory, at least one", () => {
+  assert.equal(maxJobs(16, 64 * GIB), 32);
   assert.equal(maxJobs(16, 8 * GIB), 6);
+  assert.equal(maxJobs(14, 23 * GIB), 17);
   assert.equal(maxJobs(8, 1 * GIB), 1);
-  assert.equal(maxJobs(1, 64 * GIB), 1);
+  assert.equal(maxJobs(1, 64 * GIB), 2);
   assert.equal(maxJobs(4, 0), 1);
   assert.ok(maxJobs() >= 1);
 });
@@ -126,14 +127,30 @@ test("the governor lets the first run start at once and holds later ones while t
     sleep: async ms => { if (ms === POLL_MS) hot = false; },
     onWait: reason => waits.push(reason),
   });
-  await admit(() => inFlight);
+  const first = await admit(() => inFlight);
   assert.deepEqual(waits, []);
   inFlight = 1;
-  await admit(() => inFlight);
+  const second = await admit(() => inFlight);
   assert.deepEqual(waits, ["cpu"]);
+  await first();
+  await second();
   hot = true;
   inFlight = 0;
   await admit(() => inFlight); // nothing running: never blocks
+  assert.deepEqual(waits, ["cpu"]);
+});
+
+test("one governor shared by several pools counts the runs of all of them, so the second pool's first run is not exempt from headroom", async () => {
+  let hot = false;
+  const waits = [];
+  const { admit } = createGovernor({
+    read: () => ({ reading: { freeMemory: 8 * GIB, cpuBusy: hot ? 0.99 : 0.1, load1: 0, cores: 4 }, cpus: [] }),
+    sleep: async ms => { if (ms === POLL_MS) hot = false; },
+    onWait: reason => waits.push(reason),
+  });
+  await admit(() => 0); // pool A's first run
+  hot = true;
+  await admit(() => 0); // pool B has nothing in flight itself, but A's run is: headroom is judged
   assert.deepEqual(waits, ["cpu"]);
 });
 

@@ -10,7 +10,7 @@
 // The signing key is never stored: a job holds the path of the key file and the worker reads it when the job starts.
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { rmSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -19,8 +19,8 @@ import { fileURLToPath } from "node:url";
 import { signingKeyFromFile } from "./chain.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceiptFile, scrubText } from "./receipt-scrub.js";
-import { combinedExitCode, exitCodeOf, maxJobs, runSpecs, specsInDir } from "./run-spec.js";
-import { processAlive } from "./slots.js";
+import { combinedExitCode, exitCodeOf, maxJobs, runGovernor, runSpecs, specsInDir } from "./run-spec.js";
+import { processAlive, reclaimIfStale } from "./slots.js";
 import { isMainModule, parseCli } from "./spec/util.js";
 
 export const EXIT_NOT_FINISHED = 4;
@@ -31,6 +31,7 @@ const DIRS = ["queued", "running", "done"];
 const STATES = ["queued", "running", "done", "cancelled", "interrupted"];
 const DEFAULT_IDLE_EXIT_SECONDS = 30;
 const POLL_MS = 1000;
+const MAX_LOOP_FAILURES = 10;
 
 const queueRoot = receiptsDir => join(receiptsDir, ".queue");
 const jobPath = (receiptsDir, dir, id) => join(queueRoot(receiptsDir), dir, `${id}.json`);
@@ -50,7 +51,13 @@ async function renameWithRetry(from, to) {
 
 async function writeJson(path, value) {
   const temp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  const handle = await open(temp, "w", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
+    await handle.sync(); // flushed before it is renamed into place, like the receipts
+  } finally {
+    await handle.close();
+  }
   try {
     await renameWithRetry(temp, path);
   } catch (error) {
@@ -81,8 +88,10 @@ async function jobIds(receiptsDir, dir) {
   }
 }
 
+// The queue folders are private to the user on POSIX: whoever can write a job file chooses the specs the worker runs and the key
+// file it signs with, so a receipts directory that others can write to must not carry a queue they can write to.
 async function ensureDirs(receiptsDir) {
-  for (const dir of DIRS) await mkdir(join(queueRoot(receiptsDir), dir), { recursive: true });
+  for (const dir of DIRS) await mkdir(join(queueRoot(receiptsDir), dir), { recursive: true, mode: 0o700 });
 }
 
 // The job with this id wherever it is now (queued, running or done), or null.
@@ -100,11 +109,15 @@ const publicJob = job => ({ ...job, keyFile: undefined });
 // ---- the worker: one per receipts directory, found by its lock file ----
 
 const workerLockPath = receiptsDir => join(queueRoot(receiptsDir), "worker.lock");
+// The worker rewrites its lock every WORKER_HEARTBEAT_MS; a lock not refreshed for WORKER_STALE_MS has no live worker behind it,
+// whatever its process id says (a reused id). Taking over a stale lock is the reclaim of slots.js (grace for a lock mid-write, claim-then-verify).
+const WORKER_HEARTBEAT_MS = 20_000;
+const WORKER_STALE_MS = 120_000;
 
 async function readWorkerLock(receiptsDir) {
   try {
     const owner = JSON.parse(await readFile(workerLockPath(receiptsDir), "utf8"));
-    return Number.isInteger(owner?.pid) && typeof owner.host === "string" ? owner : null;
+    return Number.isInteger(owner?.pid) && typeof owner.host === "string" && Number.isFinite(owner.at) ? owner : null;
   } catch {
     return null;
   }
@@ -112,7 +125,7 @@ async function readWorkerLock(receiptsDir) {
 
 export async function workerAlive(receiptsDir) {
   const owner = await readWorkerLock(receiptsDir);
-  return Boolean(owner && owner.host === hostname() && processAlive(owner.pid));
+  return Boolean(owner && owner.host === hostname() && processAlive(owner.pid) && Date.now() - owner.at < WORKER_STALE_MS);
 }
 
 // A function that gives the worker lock back, or null when a live worker holds it.
@@ -120,19 +133,31 @@ async function takeWorkerLock(receiptsDir) {
   await ensureDirs(receiptsDir);
   const path = workerLockPath(receiptsDir);
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    let handle;
     try {
-      const handle = await open(path, "wx");
-      await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() }));
-      await handle.close();
-      const give = () => rmSync(path, { force: true });
-      process.once("exit", give);
-      return async () => { process.removeListener("exit", give); await rm(path, { force: true }); };
+      handle = await open(path, "wx");
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
-      const owner = await readWorkerLock(receiptsDir);
-      if (owner && (owner.host !== hostname() || processAlive(owner.pid))) return null;
-      await rm(path, { force: true }); // its worker died without giving it back
+      if (await reclaimIfStale(path, { maxAgeMs: WORKER_STALE_MS })) continue;
+      return null;
     }
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() }));
+    } catch (error) {
+      await handle.close().catch(() => {});
+      await rm(path, { force: true }).catch(() => {});
+      throw error;
+    }
+    await handle.close();
+    const give = () => rmSync(path, { force: true });
+    process.once("exit", give);
+    const beat = setInterval(() => { writeJson(path, { pid: process.pid, host: hostname(), at: Date.now() }).catch(() => {}); }, WORKER_HEARTBEAT_MS);
+    beat.unref();
+    return async () => {
+      clearInterval(beat);
+      process.removeListener("exit", give);
+      await rm(path, { force: true });
+    };
   }
   return null;
 }
@@ -178,14 +203,15 @@ async function claimNext(receiptsDir) {
     let job;
     try {
       job = await readJob(to);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error; // a read that failed is not a damaged file: the job stays in running/ and is settled, not lost
       job = null;
     }
     if (!job) { // damaged: set it aside where no listing reads it, and go on
       await renameWithRetry(to, join(queueRoot(receiptsDir), "done", `${id}.unreadable`)).catch(() => {});
       continue;
     }
-    const started = { ...job, state: "running", startedAt: new Date().toISOString(), workerPid: process.pid };
+    const started = { ...job, state: "running", startedAt: new Date().toISOString(), workerPid: process.pid, workerHost: hostname() };
     await writeJson(to, started);
     return started;
   }
@@ -210,15 +236,19 @@ const summaryOf = (receipt, specPath) => ({
 });
 
 // Runs one claimed job and files its result. A failure of the job itself (the key cannot be read) is the job's error, exit 2.
-export async function runJob(receiptsDir, job, { run = runSpecs, loadKey = signingKeyFromFile } = {}) {
+// Filing the result is outside the try: if that fails, the error is the worker's, not "the job could not run", and the job stays
+// in running/ where the next worker settles it as interrupted (its receipts, if any, are listed by `list`).
+export async function runJob(receiptsDir, job, { run = runSpecs, loadKey = signingKeyFromFile, governor } = {}) {
+  let outcome;
   try {
     if (process.env.PROOF_LAB_KEY !== undefined) throw new Error("PROOF_LAB_KEY is set in the worker's environment; unset it and start the worker again");
     const key = await loadKey(job.keyFile);
-    const receipts = await run(job.specs, { key, receiptsDir, jobs: Math.min(job.jobs ?? Infinity, maxJobs()) });
-    return await finish(receiptsDir, job, { exitCode: combinedExitCode(receipts.map(exitCodeOf)), results: receipts.map((receipt, i) => summaryOf(receipt, job.specs[i])), error: null });
+    const receipts = await run(job.specs, { key, receiptsDir, jobs: Math.min(job.jobs ?? Infinity, maxJobs()), governor });
+    outcome = { exitCode: combinedExitCode(receipts.map(exitCodeOf)), results: receipts.map((receipt, i) => summaryOf(receipt, job.specs[i])), error: null };
   } catch (error) {
-    return await finish(receiptsDir, job, { exitCode: 2, results: [], error: `the job could not run: ${safeLine(error)}` });
+    outcome = { exitCode: 2, results: [], error: `the job could not run: ${safeLine(error)}` };
   }
+  return finish(receiptsDir, job, outcome);
 }
 
 // Jobs a dead worker left in running/: its runs may have written receipts, so they are not run again; submit the job again.
@@ -227,9 +257,12 @@ async function settleOrphans(receiptsDir) {
   for (const id of await jobIds(receiptsDir, "queued")) await rm(claimPath(receiptsDir, id), { force: true });
   for (const id of await jobIds(receiptsDir, "running")) {
     const job = await readJob(jobPath(receiptsDir, "running", id)).catch(() => null);
-    if (job && job.host === hostname()) {
-      await finish(receiptsDir, job, { state: "interrupted", exitCode: 2, results: job.results ?? [], error: "the worker stopped before this job finished; some specs may have written receipts (see `list`); submit the job again" });
+    if (!job || (job.workerHost ?? job.host) !== hostname()) continue; // another host's worker may still be running it
+    if (job.state !== "running") { // it was filed, and the worker stopped before the move to done/: the result stands
+      await renameWithRetry(jobPath(receiptsDir, "running", id), jobPath(receiptsDir, "done", id));
+      continue;
     }
+    await finish(receiptsDir, job, { state: "interrupted", exitCode: 2, results: job.results ?? [], error: "the worker stopped before this job finished; some specs may have written receipts (see `list`); submit the job again" });
   }
 }
 
@@ -245,21 +278,33 @@ export async function workQueue(receiptsDir, { idleExitSeconds = DEFAULT_IDLE_EX
       let stop = false;
       let busy = 0;
       let lastActivity = Date.now();
+      // One governor for every job: memory and CPU headroom are judged for the worker as a whole, not once per job.
+      const governor = deps.governor ?? runGovernor();
+      // A failure in one loop (a full disk, a file that cannot be moved) must not end the others mid-job or free the lock under
+      // them: the loop reports it, waits, and tries again; ten in a row end this loop, and when none is left the worker ends.
       const loop = async () => {
-        while (!stop) {
-          const job = await claimNext(receiptsDir);
-          if (job) {
-            busy += 1;
-            try {
-              await runJob(receiptsDir, job, deps);
-              ran += 1;
-            } finally {
-              busy -= 1;
-              lastActivity = Date.now();
+        let failures = 0;
+        while (!stop && failures < MAX_LOOP_FAILURES) {
+          try {
+            const job = await claimNext(receiptsDir);
+            if (job) {
+              busy += 1;
+              try {
+                await runJob(receiptsDir, job, { ...deps, governor });
+                ran += 1;
+              } finally {
+                busy -= 1;
+                lastActivity = Date.now();
+              }
+              failures = 0;
+              continue;
             }
-            continue;
+            failures = 0;
+            if (busy === 0 && Date.now() - lastActivity >= idleExitSeconds * 1000) { stop = true; break; }
+          } catch (error) {
+            failures += 1;
+            console.error(`queue worker: ${safeLine(error)}`);
           }
-          if (busy === 0 && Date.now() - lastActivity >= idleExitSeconds * 1000) { stop = true; break; }
           await sleep(pollMs);
         }
       };
@@ -304,6 +349,7 @@ function printJob(job, worker) {
   console.log(`  submitted ${job.submittedAt} by ${job.submittedBy}@${job.host}, ${job.specs.length} spec(s)`);
   if (job.startedAt) console.log(`  started   ${job.startedAt}`);
   if (job.finishedAt) console.log(`  finished  ${job.finishedAt}`);
+  if (job.cancelledBy) console.log(`  cancelled by ${job.cancelledBy}`);
   for (const result of job.results ?? []) console.log(`  ${result.verdict} ${result.spec ?? result.specPath}${result.receiptFile ? `  receipt: ${result.receiptFile}` : ""}${result.needsReview ? `  (${result.needsReview} claim(s) need review)` : ""}${result.error ? `  error: ${result.error}` : ""}`);
   if (job.error) console.log(`  error: ${scrubText(job.error)}`);
   if ((job.state === "queued" || job.state === "running") && !worker) console.log("  no worker is running: start one with `node src/lab.js queue work`");
@@ -357,7 +403,7 @@ async function cancel(values, receiptsDir) {
   }
   const path = jobPath(receiptsDir, "done", values.id);
   const job = await readJob(path);
-  await writeJson(path, { ...job, state: "cancelled", finishedAt: new Date().toISOString(), exitCode: 2 });
+  await writeJson(path, { ...job, state: "cancelled", cancelledBy: `${userInfo().username}@${hostname()}`, finishedAt: new Date().toISOString(), exitCode: 2 });
   console.log(`job ${values.id}: CANCELLED`);
   return 0;
 }

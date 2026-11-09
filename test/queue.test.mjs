@@ -248,6 +248,69 @@ test("queue: a job a dead worker left running is settled as interrupted, not run
   void rename;
 });
 
+test("queue: a worker lock that is still being written is not taken from its worker, a stale one is", async t => {
+  const { spec, receipts, submit } = await setup(t);
+  await submit(spec);
+  const lock = join(receipts, ".queue", "worker.lock");
+  const idle = { idleExitSeconds: 0, pollMs: 10, loadKey: fakeLoadKey, run: async specs => specs.map(passing) };
+  await writeFile(lock, ""); // a worker between creating its lock and writing it
+  assert.equal(await workQueue(receipts, { ...idle, run: async () => assert.fail("no second worker beside one mid-start") }), 0);
+  await rm(lock);
+  await writeFile(lock, JSON.stringify({ pid: DEAD_PID, host: hostname(), at: Date.now() }));
+  assert.equal(await workQueue(receipts, idle), 1, "a dead worker's lock is taken over");
+  await writeFile(lock, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() - 10 * 60 * 1000 }));
+  assert.equal(await workerAlive(receipts), false, "a lock nobody refreshed is not a live worker, even if its pid is alive");
+  await submit(spec);
+  assert.equal(await workQueue(receipts, idle), 1, "and it is taken over");
+  await writeFile(lock, JSON.stringify({ pid: process.pid, host: "another-host", at: Date.now() }));
+  assert.equal(await workQueue(receipts, { ...idle, run: async () => assert.fail("another host's worker is left alone") }), 0);
+});
+
+test("queue: a job filed as done but not yet moved when its worker died keeps its result", async t => {
+  const { spec, receipts, q, submit } = await setup(t);
+  const id = await submit(spec);
+  const job = await findJob(receipts, id);
+  await mkdir(join(receipts, ".queue", "running"), { recursive: true });
+  await rm(join(receipts, ".queue", "queued", `${id}.json`));
+  await writeFile(join(receipts, ".queue", "running", `${id}.json`), JSON.stringify({ ...job, state: "done", exitCode: 1, workerHost: hostname(), results: [{ verdict: "FAIL", spec: "a", specPath: spec }] }));
+  await workQueue(receipts, { idleExitSeconds: 0, pollMs: 10, loadKey: fakeLoadKey, run: async () => assert.fail("not run again") });
+  const { code, out } = await q(["status", "--id", id, "--json"]);
+  assert.equal(code, 1, "the real exit code stands");
+  assert.equal(JSON.parse(out).state, "done");
+});
+
+test("queue: a job that another host's worker holds is left alone by this host's worker", async t => {
+  const { spec, receipts, q, submit } = await setup(t);
+  const id = await submit(spec);
+  const job = await findJob(receipts, id);
+  await mkdir(join(receipts, ".queue", "running"), { recursive: true });
+  await rm(join(receipts, ".queue", "queued", `${id}.json`));
+  await writeFile(join(receipts, ".queue", "running", `${id}.json`), JSON.stringify({ ...job, state: "running", workerHost: "another-host", host: hostname() }));
+  await workQueue(receipts, { idleExitSeconds: 0, pollMs: 10, loadKey: fakeLoadKey, run: async () => assert.fail("not this host's job") });
+  assert.equal((await q(["status", "--id", id])).code, 4);
+});
+
+test("queue: a failure in one worker loop does not end the others or lose the job", async t => {
+  const { spec, receipts, submit } = await setup(t);
+  const first = await submit(spec);
+  const second = await submit(spec);
+  let calls = 0;
+  const done = await workQueue(receipts, { idleExitSeconds: 0, pollMs: 10, loadKey: fakeLoadKey, run: async specs => {
+    calls += 1;
+    return specs.map(passing);
+  } });
+  assert.equal(done, 2);
+  assert.equal(calls, 2);
+  for (const id of [first, second]) assert.equal((await findJob(receipts, id)).state, "done");
+});
+
+test("queue: cancel records who cancelled", async t => {
+  const { spec, receipts, q, submit } = await setup(t);
+  const id = await submit(spec);
+  await q(["cancel", "--id", id]);
+  assert.match((await findJob(receipts, id)).cancelledBy, /@/);
+});
+
 test("queue: cancel stops a queued job and refuses one that already finished", async t => {
   const { spec, receipts, q, submit } = await setup(t);
   const id = await submit(spec);
