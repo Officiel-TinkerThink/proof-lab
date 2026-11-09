@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GENESIS, SEAL_WAIT_MS, fixedStamp, verifyChain, writeReceipt } from "../src/chain.js";
 import { combinedExitCode, inPool, maxJobs } from "../src/run-spec.js";
-import { cpuBusyBetween, createGovernor, headroom } from "../src/capacity.js";
+import { POLL_MS, cpuBusyBetween, createGovernor, headroom } from "../src/capacity.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI = join(ROOT, "src", "run-spec.js");
@@ -123,7 +123,7 @@ test("the governor lets the first run start at once and holds later ones while t
   const waits = [];
   const { admit } = createGovernor({
     read: () => ({ reading: { freeMemory: 8 * GIB, cpuBusy: hot ? 0.99 : 0.1, load1: 0, cores: 4 }, cpus: [] }),
-    sleep: async () => { hot = false; },
+    sleep: async ms => { if (ms === POLL_MS) hot = false; },
     onWait: reason => waits.push(reason),
   });
   await admit(() => inFlight);

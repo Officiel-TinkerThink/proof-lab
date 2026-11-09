@@ -10,6 +10,7 @@ export const TOTAL_MEMORY_SHARE = 0.75;           // the most of the machine's m
 export const CPU_BUSY_LIMIT = 0.85;               // no new run while the CPUs are busier than this
 export const LOAD_PER_CORE_LIMIT = 1.25;          // no new run while the 1-minute load average per core is above this (POSIX)
 export const SETTLE_MS = 750;                     // a started run needs time to show in the numbers before the next is judged
+export const SAMPLE_MS = 500;                     // the window the CPU is measured over at each admission
 export const POLL_MS = 1000;
 
 // The most runs worth planning for: one per worker, and no more than memory allows. At least one.
@@ -50,19 +51,18 @@ export function readMachine(previous) {
 // progress); otherwise it waits for headroom, one admission at a time with a settle pause after each, so a burst of
 // finished runs cannot all start on the same stale numbers.
 export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = RUN_MEMORY_BYTES, onWait = () => {} } = {}) {
-  let last = null;
   let gate = Promise.resolve();
   const admit = running => {
     const turn = gate.then(async () => {
-      if (running() === 0) return;
       for (;;) {
-        const { reading, cpus: seen } = read(last);
-        last = seen;
-        const verdict = headroom(reading, perRun);
+        if (running() === 0) return;
+        // CPU is measured over a fresh window right now: a reading kept from minutes ago would average a spike away.
+        const baseline = read(null).cpus;
+        await sleep(SAMPLE_MS);
+        const verdict = headroom(read(baseline).reading, perRun);
         if (verdict.ok) break;
         onWait(verdict.reason);
         await sleep(POLL_MS);
-        if (running() === 0) return;
       }
       await sleep(SETTLE_MS);
     });
