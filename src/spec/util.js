@@ -5,6 +5,10 @@ import { parseArgs } from "node:util";
 
 export const firstLine = error => (error instanceof Error ? error.message : String(error)).split("\n")[0];
 
+// Only the first line of an error: the rest of a Playwright message quotes the page's markup. A target that matched
+// several elements is listed from the page itself instead (locate.js, describeMatches).
+export const errorDetail = firstLine;
+
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Drops undefined values so optional spec fields are not passed to Playwright as explicit undefined.

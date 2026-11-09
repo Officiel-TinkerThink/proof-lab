@@ -7,15 +7,88 @@ headless browser through it, records every check, and writes a signed **receipt*
 ```
 node src/doctor.js  --key-file <key> [--spec specs/x.json]      is the setup sound?        exit 0 / 2
 node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR / 3 PASS but needs review
+                     [--spec specs/y.json ...] [--jobs N] [--share-browser N]   several specs, concurrently (see "Many specs at once")
+                     [--spec-dir specs]                         every .json in a folder, by name
+node src/validate.js --spec specs/x.json [--spec ...] [--json]   check specs without running them  exit 0 / 2
+node src/status.js  ... [--max-attempts N] [--max-age SECONDS]  (see the stop rules below)
 node src/status.js  --spec specs/x.json --key-file <key>        can I say done?            exit 0 / 1 / 2 / 3
 node src/show.js    --key-file <key> [--failures|--steps|...]   what happened in detail?
 node src/look.js    --url <url> | --spec specs/x.json [--until N]   what does the page offer a spec? (no receipt, no key)
 ```
 
-`node src/lab.js <run|status|doctor|show|look> ...` is the same set behind one entry point.
+`node src/lab.js <run|status|doctor|show|look|validate|queue> ...` is the same set behind one entry point.
 
 The key is read from a file only (`--key-file`, mode 0600 on Linux and macOS, at least 32 bytes). `PROOF_LAB_KEY` in the
 environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or `PROOF_LAB_RECEIPTS` says otherwise.
+
+### Many specs at once
+
+`run` takes `--spec` more than once and runs the specs concurrently, asynchronously in one process: at most two runs per
+worker (`os.availableParallelism()`; a browser run mostly waits, so a core serves more than one), and no more than memory allows (about 1 GiB per run, 75% of the machine's memory).
+In a Docker container the limits of the container count, not the host's: `--cpus` and `--memory` are read (Node's
+`availableParallelism()`, `constrainedMemory()` and `availableMemory()`), so a container started with `--memory=3g --cpus=4` plans
+for 3 GiB and 4 cores (2 runs at once), not for the host. Tested on Ubuntu 24.04 with Node 24: the whole suite passes there as a
+normal user, and a 32-spec batch finishes all PASS with 1.5 GiB and 2 CPUs.
+A governor also holds each new run back while free memory is low, CPU use is above 85% or the load average per core is above
+1.25 (new runs are judged one at a time on CPU measured over a quarter-second window; one measurement serves the next few starts, each of which is counted as a core of CPU and a run's memory the measurement could not see yet, and it is taken again after half a second, so a burst cannot overload the machine); with nothing running it
+always lets one start, so the batch always finishes. `--jobs N` lowers the ceiling; a higher number is cut to it, with a note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
+that cannot be read, or a run that stops, is an ERROR for that spec only; the others go on. The results print in the order of
+the `--spec` flags (`--json` prints a list), then one line of totals ("N of M specs run"). `--spec-dir <dir>` adds every `.json` file of a
+folder, by name, to the specs given with `--spec`. The exit code is 1 if any spec FAILed, else 2 if any
+was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exits exactly as before.
+
+**Sharing a browser (opt-in).** By default every run launches its own Chromium. `--share-browser N` (on `run` and `queue submit`,
+1 to 32; 1 is the default) lets up to N runs of the batch share one Chromium, each in its own browser context: its own cookies,
+storage, cache and pages (checked: a cookie set in one context is not seen by another, and a cacheable script is fetched once per
+context), but not its own process tree. It is faster and lighter (about twice the specs per second and half to two thirds of the
+Chromium memory on short specs, measured on one developer machine) and has two costs. The failure domain is shared: if the browser dies, every
+run on it ends ERROR ("the browser or one of its pages stopped during this run"), never FAIL or PASS, and the other browsers' runs go on.
+The loss is noticed at once (the run's current step is abandoned the moment the browser disconnects or the page crashes, in under
+a second in the tests, where it used to end at the step's own deadline, 18 to 21 s), and the checks recorded before the loss are not
+counted: the receipt shows none, and the evidence file keeps them as `unconfirmed-check` records that no total includes. And the receipt says it: the browser string of the evidence reads `chromium <version> (shared browser, own context)`, and
+the signed `next` text of the receipt carries the line "Browser: this run shared one browser with other runs, in its own context;
+it is not an independent browser.", so no receipt claims an independent browser it did not have. Measured as isolated between two
+contexts of one Chromium: cookies, localStorage, sessionStorage, IndexedDB, the Cache API, service workers, BroadcastChannel
+messages, reused HTTP credentials, granted permissions, popups and the HTTP cache. Not isolatable and not measured: the shared browser,
+GPU and network processes and the DNS cache (web research found no primary source on these either). Whether a shared browser is acceptable evidence for your release is for the validation owner
+to decide; leave the flag off where an independent browser per run is what the receipt must show. A browser that disappears under
+any run, shared or not, is ERROR, never a verdict on the app.
+
+**Sizing, by napkin math.** The ceiling is `min(2 x cores, floor(0.75 x memory / 1 GiB))`: 14 cores and 23 GiB give 17 runs, 8 cores
+and 11.7 GiB give 8, a container with `--memory=3g --cpus=4` gives 2, one with `--memory=1500m --cpus=2` gives 1. The 1 GiB per run is a
+planning number for a heavy page, not a measurement: on the short built-in waitlist spec (32 specs, all PASS) a run measured about
+30 to 60 MB of Chromium (about 20 to 25 MB sharing a browser), so for small specs memory is far from the limit and CPU is the real
+one. Measured CPU per spec was about 3 core-seconds with a browser of its own on Windows (most of it launching the browser) and
+about 1 with `--share-browser`, which gave 2.9 to 3.9 specs/s on 14 cores one browser per run against 6.8 to 9.3 sharing; on
+Ubuntu 24.04 with 8 CPUs, 6.1 and 8.9 specs/s. So 1,000 short specs take about 5 minutes with a browser each and about 2 minutes sharing.
+For your own specs: run one, note its peak Chromium memory and how long it takes, then `jobs = min(2 x cores, 0.75 x memory / peak
+per run)`. The numbers above come from trivial specs on two machines; real specs are not measured.
+
+Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
+the chain, inside the lock, so whichever run finishes first comes first and no run refuses another.
+
+The ceiling is machine-wide, not per command: every run takes one of `maxJobs` slot files (a `proof-lab-slots` folder under the
+OS temp folder, or `PROOF_LAB_SLOTS_DIR`), so separate `run` commands and the queue worker below add up to the same limit. A run
+waits for a free slot; a slot whose process died is taken over (by process id, and any slot older than 6 hours is treated as a
+leak), and a slot is given back when the run ends.
+
+### Leave it and poll (the queue)
+
+For a batch nobody wants to wait for, `node src/lab.js queue ...` (jobs live in `<receipts>/.queue/`, which no receipt command reads):
+
+| command | what it does |
+|---|---|
+| `queue submit (--spec f ... \| --spec-dir d) --key-file k [--jobs N] [--share-browser N] [--no-worker]` | writes a job, prints its id at once, and starts a background worker unless one is running |
+| `queue status --id <id> [--json]` | the job's state (`queued`, `running`, `done`, `cancelled`, `interrupted`), and when done each spec's verdict and receipt file. Exit: 4 not finished; once finished the same codes as `run` (0 pass, 1 fail, 2 error, 3 needs review) |
+| `queue list [--state s] [--limit N]` | the jobs, newest first |
+| `queue cancel --id <id>` | stops a job that is still queued (a running job cannot be cancelled) |
+| `queue work [--idle-exit seconds]` | the worker itself: runs queued jobs, several at once within the slots, and stops after 30 s (default) with nothing to do. `submit` starts one; run it by hand to restart one |
+
+The signing key is never stored in a job, only the path of the key file, which the worker reads when the job starts (the same 0600
+and `PROOF_LAB_KEY` rules as `run`). Receipts and evidence are written by the runs exactly as `run` writes them, so `status` (the
+gate), `list`, `show` and `doctor` see them as before; a job file is bookkeeping, not evidence. If the worker dies mid-job the job
+becomes `interrupted` and is not run again, because some of its specs may already have written receipts: look with `list` and
+submit it again. One worker runs per receipts directory.
 
 ## The loop
 
@@ -66,6 +139,7 @@ An app exposes its revision with `<meta name="app-revision" content="<12 hex cha
 | `env` | The visitor's browser, fixed for the whole run: `viewport {width, height}`, `locale` (`de-DE`), `timezoneId` (`Asia/Tokyo`), `colorScheme` (`light` `dark` `no-preference`), `reducedMotion` (`reduce` `no-preference`), `geolocation {latitude, longitude, accuracy?}`, `permissions` (a list: `geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, `clipboard-write`, ...). Recorded in the evidence `run` record. There is no `offline` here: a run that starts offline cannot load its page; use the `setOffline` step. Geolocation is only readable by the page when `permissions` also lists `geolocation`. |
 | `timeoutMs` | Default budget per step, ms (default 3000, at most 600000). |
 | `noPageErrors` | Adds a final check: no uncaught exception and no `console.error` during the run. |
+| `allowPageErrors` | With `noPageErrors: true`: up to 20 texts (1 to 200 characters). A console error that contains one is not counted, for the browser's own line about an expected refusal (`["401"]`). An uncaught exception is always counted, and so is any error beyond the 100 the runner keeps. The console record stays in the evidence either way. |
 | `steps` | 1 to 500 steps. The spec must contain an assertion (`assert*`, a `goto` with `status`) or `noPageErrors`, or it would prove nothing. |
 
 **Unknown fields are errors.** A typo such as `equal` is rejected before any browser starts; it can never turn an
@@ -103,7 +177,33 @@ DOM cannot be reached.
 Actions need a target that matches **one** element: several matches fail the step (ambiguous). Reads use the first match
 unless `nth` is given. `assertCount` counts all matches.
 
-### Operations (49)
+### Recipes (found in use)
+
+- **Upload a file:** `setInputFiles` takes a path relative to the spec file, or `{ "name": "a.csv", "mimeType": "text/csv", "text": "..." }` or `"base64": "..."`. No file on disk is needed.
+- **A link that opens a new tab:** put `"expect": { "popup": { "switchTo": true } }` on the click; later steps then act in the new tab. `switchTab` and `closeTab` move between tabs.
+- **A consent or login page on another origin (OAuth):** drive it as a visitor would (click the provider button, `switchTab` or follow the redirect, fill the consent form with `fill`, click Allow), then `assertUrl` that you are back on the app. A test provider on loopback is better than a real one.
+- **Prove "blocked" and also "not stuck":** a refusal check (a 429 notice, a disabled button) passes forever if the app locks up. Add a second check that the visitor can still do the next thing (the form accepts a later valid input, the page still navigates).
+- **A state that survives a failed run** (a record, a throttle): use `{{runId}}` in names so each run starts clean.
+- **A theme the app switches with its own toggle** is not changed by `env.colorScheme` or `emulateMedia`; click the toggle, then assert.
+
+### Variables: carry a value from one step to a later one
+
+`capture` reads one value off the page into a name; `{{name}}` in a later step uses it. `{{runId}}` is built in: a short
+unique text per run (also in the evidence run record), for names a spec creates (`"user-{{runId}}"`), so a failed run
+never leaves a record that blocks the next one.
+
+```json
+{ "op": "capture", "testId": "order-number", "from": "text", "as": "order" },
+{ "op": "click", "role": "link", "name": "Orders" },
+{ "op": "assertText", "check": "the order is listed", "testId": "latest-order", "contains": "{{order}}" }
+```
+
+- `from`: `text`, `value`, `count` (how many elements match; the value is the number as text) or `attribute` (with `attribute`).
+- Replaced only in: `goto.url`, `fill.value`, `type.value`, and `equals`/`contains` of `assertText`, `assertValue`, `assertAttribute`, `assertUrl`, `assertTitle`, `assertCookie`. Never in a target, `matches`, `check`, `name` or `hint`: page text must not become a selector or a pattern.
+- A name must be captured by an earlier step: `validate` reports a typo or a wrong order. Write `\{{name}}` for the literal text.
+- A `goto` that uses a captured value must stay on the app's origin. A value is cut at 1000 characters. A field that holds a credential is never captured. The evidence step record names the variable, not its value; a later check shows the value it compared, scrubbed like any other value. A text or value capture waits for the element like an assertion; `count` reads once and cannot be combined with `nth`.
+
+### Operations (51)
 
 | Op | Fields | Notes |
 |---|---|---|
@@ -131,6 +231,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `assertProperty` | target, `property` (dotted), `equals` | For example `validity.valueMissing`. Objects compare by content. |
 | `assertCss` | target, `property`, one of `equals` `contains` `matches` | Computed style. |
 | `assertCount` | target, `count` or `min`/`max` | No `nth`. |
+| `assertContrast` | target, `min?` (default 4.5) | WCAG contrast ratio of the element's text colour on its background. Plain colours only: a background image, a gradient or opacity makes the ratio unknowable, and then the check is a `review` claim (exit 3), never a pass. Check both colour schemes with `emulateMedia` when the app follows the system setting; an app with its own theme toggle needs a click on the toggle first. |
 | `assertUrl` `assertTitle` | `equals` or `contains` or `matches` | |
 | `assertStorage` | `area?` (`local` default, `session`), `key`, `path?`, one of `equals` `exists` | The value is parsed as JSON when it can be; `path` is dotted. Objects compare by content. |
 | `assertCookie` | `cookie` (the name), `path?`, one of `equals` `contains` `matches` `exists` | Looks in the whole browser context. A cookie value is usually a session token: the check never records a value, expected or actual: only the length and, for `equals` and for the actual side, a short keyed fingerprint (HMAC-SHA-256 with a random key held only for the run) (`(cookie, 7 characters, hmac 1a2b3c4d)`), so two different values are told apart on a mismatch. A cookie that is not there fails, also with `not`; use `exists: false` to expect absence. |
@@ -144,6 +245,7 @@ unless `nth` is given. `assertCount` counts all matches.
 | `setStorage` | `area?`, `key`, `value` | A non-string value is stored as JSON, the form `assertStorage` reads back. The page must already be on the app (about:blank has no storage). |
 | `clearStorage` | `area?`, `key?` | One key, or the whole area. |
 | `clock` | `action`, and `time` or `ms` | `install` (optional `time`), `setFixedTime` and `pauseAt` (need `time`: ISO string with an offset such as `2030-06-15T12:00:00Z` or `+02:00`, a bare date = UTC midnight, or epoch ms; a time without an offset is rejected because it would depend on the runner's time zone), `fastForward` and `runFor` (need `ms`), `resume`. Install, then `reload`, to control timers the page sets while loading. |
+| `capture` | target, `as`, `from` (`text` `value` `count` `attribute`), `attribute?` | Not an assertion: records no check. See Variables. |
 | `switchTab` | `index`, or one of `equals` `contains` `matches` | Moves the spec to another open tab. `index` counts the tabs that are open now, in the order they opened (0 = the oldest tab still open); the other form matches the tab's address. No such tab is a failed step. |
 | `closeTab` | | Closes the current tab and moves to the last one still open. The only tab cannot be closed. |
 
@@ -200,7 +302,7 @@ A signed JSON file, `receipts/<stamp>-<revision>.json`, small on purpose:
 | Field | Meaning |
 |---|---|
 | `verdict` | `PASS` every check passed and there was at least one; `FAIL` one or more failed; `ERROR` the run could not tell |
-| `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when |
+| `spec`, `app`, `bug`, `revision`, `at` | Which spec (`name@hash`), where, any injected bug, the app revision seen, when the receipt joined the chain (the end of the run; the evidence's `run` record holds its start) |
 | `totals` | `{checks, passed, failed, omitted}`. `omitted` counts failed checks not listed below (the first 20 are listed). |
 | `checks` | **Failed checks only**: `{step, name, pass, expected, actual, hint?, error?}`, long values clipped to 200 characters |
 | `review` | `{total, items}`: claims from `review` steps that need a human (the first 20 as `{step, name, note?}`). Receipts from before this field have none. |

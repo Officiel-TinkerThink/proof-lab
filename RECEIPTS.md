@@ -36,6 +36,9 @@ Exit codes: run 0 PASS, 1 FAIL, 2 ERROR (cannot tell). Verify 0 intact, 1 tamper
 - Each receipt is written to a temp file, flushed, renamed over its name, and the directory is flushed (POSIX). Written
   receipts are set read-only (0444).
 - Writers hold `.chain.lock` (exclusive create, holding `{pid, host}`) around the head read and the write.
+- `run` and `prove` stamp a receipt's `at` inside the lock, as it joins the chain, so runs that overlap (in one process or
+  several) never refuse each other. Two seals in one millisecond would share a stamp, so a head up to one second ahead is
+  waited out; a head further ahead is a clock problem and the write is refused, as before.
 - A lock is reclaimed only when its owner is provably gone: same host and the pid no longer exists. A lock held by a live
   process or by another host is never taken over, by age or otherwise; the writer waits, then fails and names the file.
 - Known limits: a pid can be reused after a crash, so a stale lock can look live until the pid is reused. Two reclaimers

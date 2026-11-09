@@ -35,7 +35,7 @@ test("the CLI exits 2, not 1, for every setup problem, and writes nothing", TIME
 
     const cases = [
       ["no key file", ["--spec", WAITLIST, "--receipts", receipts], {}, /--key-file <path> is required/],
-      ["no spec", ["--key-file", keyFile, "--receipts", receipts], {}, /--spec <file\.json> is required/],
+      ["no spec", ["--key-file", keyFile, "--receipts", receipts], {}, /--spec <file\.json> or --spec-dir <dir> is required/],
       ["key in the environment", ["--spec", WAITLIST, "--key-file", keyFile, "--receipts", receipts], { PROOF_LAB_KEY: "x".repeat(48) }, /PROOF_LAB_KEY is set/],
       ["missing key file", ["--spec", WAITLIST, "--key-file", join(dir, "nope.txt"), "--receipts", receipts], {}, /ERROR:/],
     ];

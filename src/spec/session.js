@@ -19,15 +19,46 @@ export function contextOptionsOf(env) {
 }
 
 // hooks: onLaunch(browserVersion), onPageError(message), onConsole(level, text), onResponse(response), onRequestFailed(request), all optional.
-// Returns { browser, page, adopt(page), browserVersion, close }. close() never throws. Navigation to firstUrl is part of opening:
+// Returns { browser, page, adopt(page), browserVersion, close, lost, whenLost, shared }. close() never throws. Navigation to firstUrl is part of opening:
 // if it fails the browser is closed again and the error is thrown.
-export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
-  const browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
-  const close = () => browser.close().catch(() => {});
-  const browserVersion = `chromium ${browser.version()}`;
-  hooks.onLaunch?.(browserVersion); // before the first navigation, so a run that fails there still records its browser
+// With `pool` (browser-pool.js, opt-in) the browser is leased from the pool and shared with other runs: close() then closes only
+// this run's context and gives the lease back, and the browser string says "shared" so the receipt never claims more isolation
+// than the run had. `lost()` tells whether the browser went away under the run (a crash is not a verdict on the app).
+export async function openSession({ firstUrl, timeoutMs, env, hooks = {}, pool = null }) {
+  const lease = pool ? await pool.lease() : null;
+  let browser;
   try {
-    const context = await browser.newContext(contextOptionsOf(env));
+    browser = lease ? lease.browser : await chromium.launch({ headless: true, env: environmentWithoutKey() });
+  } catch (error) {
+    lease?.release();
+    throw error;
+  }
+  // Lost = the browser went away while the run still used it. A pooled browser is watched once, by the pool; one of our own here.
+  // `whenLost` settles at that moment, so a step stuck polling a dead page is abandoned at once instead of at its own deadline.
+  let disconnected = false;
+  let closedLost = null; // what lost() said as the run closed: closing the browser ourselves, or a death after the run left, is no loss
+  let signalLost;
+  const whenLost = new Promise(resolve => { signalLost = resolve; });
+  if (lease) lease.whenLost.then(signalLost);
+  else browser.on("disconnected", () => { disconnected = true; signalLost(); });
+  // A page that crashed (renderer out of memory, killed) leaves calls in flight on it that Playwright can leave pending
+  // (microsoft/playwright #31907, #43204 on 1.64.0), so a page crash is a loss of the run too: ERROR, never a verdict on the app.
+  let pageCrashed = false;
+  // A call can be rejected ("target closed") a moment before the 'disconnected' event arrives, so the connection itself is asked too:
+  // a run that closes at that moment must still count as lost, not as an app that failed its checks.
+  const gone = () => browser.isConnected?.() === false;
+  const lost = () => closedLost ?? (disconnected || pageCrashed || gone() || Boolean(lease?.lost()));
+  let context = null;
+  const close = async () => {
+    closedLost ??= lost();
+    if (!lease) return browser.close().catch(() => {});
+    await context?.close().catch(() => {});
+    lease.release();
+  };
+  try {
+    const browserVersion = `chromium ${browser.version()}${lease ? " (shared browser, own context)" : ""}`;
+    hooks.onLaunch?.(browserVersion); // before the first navigation, so a run that fails there still records its browser
+    context = await browser.newContext(contextOptionsOf(env));
     // The first page and every popup get the same timeouts and hooks: an error on a second tab is still the app's error.
     // Idempotent: the context's "page" event and an expectation block can both adopt the same popup, and hooks must not double.
     const adopted = new WeakSet();
@@ -36,6 +67,7 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
       adopted.add(page);
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(Math.max(timeoutMs, MIN_NAVIGATION_TIMEOUT_MS));
+      page.on("crash", () => { pageCrashed = true; signalLost(); });
       page.on("pageerror", error => hooks.onPageError?.(error.message));
       page.on("console", message => hooks.onConsole?.(message.type(), message.text()));
       page.on("response", response => hooks.onResponse?.(response));
@@ -46,7 +78,8 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
     context.on("page", adopt);
     const page = adopt(await context.newPage());
     await page.goto(firstUrl, { waitUntil: "load" });
-    return { browser, page, adopt, browserVersion, close };
+    // A shared browser is not handed out: closing or driving it would reach every run on it.
+    return { browser: lease ? null : browser, page, adopt, browserVersion, close, lost, whenLost, shared: Boolean(lease) };
   } catch (error) {
     await close();
     throw error;

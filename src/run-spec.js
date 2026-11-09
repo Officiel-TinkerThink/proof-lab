@@ -1,23 +1,28 @@
 // run-spec: drive an app through a JSON spec, record every check, write a signed summary receipt and an evidence file.
 // Verdicts: PASS (exit 0), FAIL (exit 1: a check failed), ERROR (exit 2: the run could not finish).
-// Usage: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]
+// Usage: node src/run-spec.js (--spec <file.json> [--spec <file.json> ...] | --spec-dir <dir>) --key-file <path> [--receipts <dir>] [--jobs N] [--share-browser N] [--json]
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
+import { createGovernor, maxJobs, memoryLimit } from "./capacity.js";
+import { tryAcquireSlot } from "./slots.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
 import { fixedStamp, signingKeyFromFile } from "./chain.js";
 import { clipValue, evidenceText, hideAddressText, hideQuery, hideTokenSegments, isSensitiveStep, maskValue, redactClip, redactSecrets, scrubRecord, specLabel, scrubValue, summarize, summarizePageErrors, summarizeReviews } from "./spec/evidence.js";
 import { absentWaitMs, withExpectations } from "./spec/expect.js";
-import { describeTarget } from "./spec/locate.js";
+import { describeMatches, describeTarget, hasTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
+import { MAX_SHARE, createBrowserPool } from "./spec/browser-pool.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceipt, scrubReceiptFile, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
-import { bounded, firstLine, isMainModule, parseCli } from "./spec/util.js";
+import { seedVars, substituteStep } from "./spec/vars.js";
+import { bounded, errorDetail, firstLine, isMainModule, parseCli } from "./spec/util.js";
 
 export { validateSpec };
 
@@ -26,7 +31,7 @@ const DEFAULT_RECEIPTS = process.env.PROOF_LAB_RECEIPTS ?? join(ROOT, "receipts"
 const EXIT = { PASS: 0, FAIL: 1, ERROR: 2 };
 // Every check passed but the spec listed claims only a human can judge: not "done", and not a failure either.
 export const EXIT_NEEDS_REVIEW = 3;
-const exitCodeOf = receipt => (receipt.verdict === "PASS" && receipt.review?.total > 0 ? EXIT_NEEDS_REVIEW : EXIT[receipt.verdict]);
+export const exitCodeOf = receipt => (receipt.verdict === "PASS" && receipt.review?.total > 0 ? EXIT_NEEDS_REVIEW : EXIT[receipt.verdict]);
 const MAX_CONSOLE_RECORDS = 500;
 const MAX_PAGE_ERRORS_KEPT = 100;
 const MAX_FAILURE_CONTEXTS = 5;
@@ -37,6 +42,8 @@ const EVIDENCE_BOOKKEEPING = ["type", "spec", "at", "mime", "base64"];
 // Playwright times out its own actions. This is the margin on top of a step's budget before the runner gives up on a
 // step that never returns at all (a frozen page does not answer count() or title()).
 export const stepLimits = { graceMs: 20000 }; // an object so a test can shorten it
+const LOST = Symbol("browser lost");
+export const SHARED_BROWSER_NOTE = "Browser: this run shared one browser with other runs, in its own context; it is not an independent browser.";
 
 // "check" names the step in the receipt. "name" without a role is the older spelling of it.
 function labelOf(step, index) {
@@ -46,10 +53,10 @@ function labelOf(step, index) {
 }
 
 // adopt(page) gives a popup the hooks and timeouts of the first page (see openSession); ctx.page moves to a popup on switchTo.
-export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks }) {
+export function createContext({ page, adopt = page => page, appUrl, specDir, timeoutMs, checks, runId = randomBytes(4).toString("hex") }) {
   const ctx = {
     // A tab the app closed stays the current page: a later step on it fails honestly instead of silently reading another tab.
-    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [],
+    page, adopt, appUrl, specDir, timeoutMs, checks, index: 0, suppressed: [], reviews: [], vars: seedVars(runId),
     record(step, pass, rawExpected, rawActual, rawError) {
       // What the page or the spec shows can hold a credential (an address, a field value, an error that quotes one):
       // every value is scrubbed here, once, before it can reach the receipt or the evidence file.
@@ -84,6 +91,7 @@ export async function runStep(ctx, step) {
   const record = { type: "step", step: ctx.index, op: step.op, check: labelOf(step, ctx.index) };
   const target = describeTarget(step);
   if (target) record.target = target;
+  if (step.op === "capture") record.captured = step.as; // the name only: the value is not written down
   // Listeners a step arms (dialog, popup) are removed when the step ends, also when it was given up on: otherwise an
   // abandoned step's handler would answer a later step's dialog.
   const cleanups = [];
@@ -98,15 +106,23 @@ export async function runStep(ctx, step) {
       page: { get: () => ctx.page, set: page => { if (live()) ctx.page = page; } },
       onStepEnd: { value: cleanup => { cleanups.push(cleanup); } },
     });
-    const act = () => STEPS[step.op](stepCtx, step);
-    await bounded(step.expect === undefined ? act() : withExpectations(stepCtx, step, labelOf, act), (step.timeout ?? ctx.timeoutMs) + stepLimits.graceMs + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
+    // {{name}} is replaced in a short list of value fields only (spec/vars.js); the label and the target stay as written.
+    const resolved = substituteStep(step, ctx.vars, ctx.appUrl);
+    const act = () => STEPS[step.op](stepCtx, resolved);
+    await bounded(step.expect === undefined ? act() : withExpectations(stepCtx, resolved, labelOf, act), (step.timeout ?? ctx.timeoutMs) + stepLimits.graceMs + absentWaitMs(step), `step ${ctx.index} (${step.op})`);
   } catch (error) {
     ctx.epoch += 1; // the step is given up on: anything it still has in flight must not touch the run any more
     if (step.optional) {
       record.skipped = firstLine(error);
     } else {
       const hint = step.hint ?? `The app did not allow step ${ctx.index} (${step.op}${target ? ` ${target}` : ""}).`;
-      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, firstLine(error));
+      let detail = errorDetail(error);
+      const named = /strict mode violation.*resolved to (\d+) elements/.exec(detail);
+      if (named && hasTarget(step)) {
+        const matches = await describeMatches(ctx.page, step, Number(named[1]));
+        if (matches.length > 0) detail = `${detail} ${matches.join(" | ")}`;
+      }
+      if (!ctx.abandoned) ctx.record({ ...step, hint }, false, `${step.op} completes`, null, detail); // a run that was given up on records nothing more
     }
   } finally {
     for (const cleanup of cleanups) cleanup();
@@ -156,7 +172,7 @@ async function revisionDrift(seen) {
 
 // Runs one spec file. Returns the receipt as stored, plus a non-stored `detail` (the evidence, in memory).
 // An invalid spec returns ERROR and writes nothing.
-export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } = {}) {
+export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, pool = null } = {}) {
   const receipt = {
     verdict: "ERROR", app: null, bug: null, spec: null, revision: null, at: fixedStamp(),
     totals: null, checks: [], review: { total: 0, items: [] }, evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
@@ -191,25 +207,35 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const pageErrors = new Set();
   let pageErrorsDropped = 0;
   const pageErrorLengths = new Map();
-  const noteError = raw => {
+  // Messages that came from an uncaught exception: allowPageErrors never exempts these, only a console line.
+  const uncaught = new Set();
+  const noteError = (raw, { fromConsole = false } = {}) => {
     const message = redactClip(raw, 1000);
     // The length is kept only for a message that is kept: the map cannot outgrow the capped set.
     if (pageErrors.size < MAX_PAGE_ERRORS_KEPT) {
       pageErrors.add(message);
+      if (!fromConsole) uncaught.add(message);
       if (!pageErrorLengths.has(message)) pageErrorLengths.set(message, String(raw).length);
     }
-    else if (!pageErrors.has(message)) pageErrorsDropped += 1;
+    // At the cap an uncaught exception cannot be marked, so it always counts as dropped (the check fails closed); only a
+    // console line that repeats a kept one is ignored.
+    else if (!fromConsole || !pageErrors.has(message)) pageErrorsDropped += 1;
   };
   const consoleRecords = [];
   let consoleDropped = 0;
   const stepRecords = [];
   const contextRecords = [];
   const checks = [];
+  // {{runId}}: a short unique text for this run, for names a spec creates (see spec/vars.js). It is in the evidence run record.
+  const runId = randomBytes(4).toString("hex");
   let reviews = [];
   const seenRevisions = new Map();
   let changedWhileRunning = null;
   let server = null;
-  let browser = null;
+  let closeSession = null;
+  let browserLost = () => false;
+  const browserShared = Boolean(pool); // known before the page opens: a run that fails while opening still shared its browser
+  let uncounted = []; // checks recorded before a loss: kept in the evidence, never in the receipt
   let shot = null;
   let browserVersion = null;
   let completed = false;
@@ -227,11 +253,12 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       firstUrl,
       timeoutMs,
       env: spec.env,
+      pool,
       hooks: {
         onLaunch: version => { browserVersion = version; },
         onPageError: message => noteError(message),
         onConsole: (level, text) => {
-          if (level === "error") noteError(text);
+          if (level === "error") noteError(text, { fromConsole: true });
           if (consoleRecords.length < MAX_CONSOLE_RECORDS) consoleRecords.push({ type: "console", level, text: redactClip(text, 1000) });
           else consoleDropped += 1;
         },
@@ -249,17 +276,27 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         },
       },
     });
-    browser = session.browser;
+    closeSession = session.close;
+    browserLost = session.lost;
+    const lostSignal = session.whenLost.then(() => LOST);
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
-    const ctx = createContext({ page, adopt: session.adopt, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks });
+    const ctx = createContext({ page, adopt: session.adopt, appUrl: receipt.app, specDir: dirname(resolve(specPath)), timeoutMs, checks, runId });
     for (const [i, step] of spec.steps.entries()) {
       ctx.index = i + 1;
       const first = checks.length;
-      stepRecords.push(await runStep(ctx, step));
+      // A step polling a dead page would only stop at its own deadline (its budget plus a grace of 20 s): when the browser goes
+      // away the step is abandoned at once (its late writes are made no-ops by the epoch and `abandoned`) and the run ends as ERROR.
+      const outcome = await Promise.race([runStep(ctx, step), lostSignal]);
+      if (outcome === LOST) {
+        ctx.epoch += 1;
+        ctx.abandoned = true;
+        throw new Error("the browser stopped");
+      }
+      stepRecords.push(outcome);
       const failedNow = checks.slice(first).some(check => !check.pass);
-      if (failedNow && contextRecords.filter(record => record.type === "context").length < MAX_FAILURE_CONTEXTS) {
+      if (failedNow && !browserLost() && contextRecords.filter(record => record.type === "context").length < MAX_FAILURE_CONTEXTS) {
         const pictured = contextRecords.some(record => record.type === "screenshot");
         const captured = await bounded(captureContext(ctx.page, ctx.index, !pictured), 12000, "capturing the page")
           .catch(error => [{ type: "context", step: ctx.index, url: null, title: null, aria: null, ariaError: firstLine(error) }]);
@@ -279,16 +316,33 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     receipt.verdict = "ERROR";
     receipt.error = `run failed: ${safeLine(error)}`;
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (closeSession) await closeSession().catch(() => {});
     if (server) await server.close().catch(() => {});
+  }
+
+  // A browser that went away under the run (crashed, killed, or took its pool-mates down) is no verdict on the app: whatever the
+  // steps then reported ("target closed" as a failed check) is not evidence, so the run is ERROR, never FAIL or PASS.
+  // The checks recorded are dropped from the receipt: a failed one after the loss is "target closed", not a finding, and a run
+  // that cannot tell has no FAIL to show. The evidence keeps what was recorded, as "unconfirmed-check" records that no total counts.
+  if (browserLost()) {
+    completed = false;
+    uncounted = checks.splice(0);
+    const dropped = uncounted.length;
+    receipt.verdict = "ERROR";
+    receipt.error = `run failed: the browser or one of its pages stopped during this run (crashed or was killed), so nothing it showed is evidence${dropped > 0 ? ` (${dropped} checks recorded before it stopped are not counted)` : ""}`;
   }
 
   if (completed) {
     // Last, so an error thrown late in the run (during the guard or the final screenshot) is still seen by this check.
     if (spec.noPageErrors === true) {
+      // A console error that contains an allowed text is expected (a refusal's own 401 line); it stays in the evidence either way.
+      // An uncaught exception is never exempt, and neither is a message the cap dropped: it cannot be shown to be allowed.
+      const allowed = spec.allowPageErrors ?? [];
+      const unexpected = [...pageErrors].filter(message => uncaught.has(message) || !allowed.some(text => message.includes(text)));
+      const pass = unexpected.length === 0 && pageErrorsDropped === 0;
       checks.push({
-        step: 0, name: "no page errors", pass: pageErrors.size === 0, expected: [], actual: summarizePageErrors([...pageErrors], pageErrorLengths),
-        ...(pageErrors.size > 0 ? { hint: "The page logged errors. Read the console records in the evidence file." } : {}),
+        step: 0, name: "no page errors", pass, expected: [], actual: summarizePageErrors(unexpected, pageErrorLengths),
+        ...(!pass ? { hint: "The page logged errors. Read the console records in the evidence file. A console error the spec expects (a refusal's own line) can be listed in allowPageErrors (for example \"401\"); an uncaught exception cannot." } : {}),
       });
     }
     if (checks.length === 0) {
@@ -300,6 +354,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
 
   // Scrub the checks in place first: the receipt's failures, its next steps and the evidence records are all built from them.
   checks.forEach(check => Object.assign(check, scrubRecord(check)));
+  uncounted.forEach(check => Object.assign(check, scrubRecord(check)));
   const { totals, failures } = summarize(checks);
   receipt.totals = totals;
   receipt.checks = failures;
@@ -316,15 +371,18 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   } else {
     receipt.next = [receipt.error ?? "Unknown error.", "Can't tell is not the same as broken: run it again once the app is stable."];
   }
+  // `next` is signed, so this says in the receipt itself (not only in the evidence file, which can be pruned) that the browser was shared.
+  if (browserShared) receipt.next.push(SHARED_BROWSER_NOTE);
 
   // Choke point: the receipt and every evidence record are scrubbed here, once, whichever code path produced the text
   // (a step error, a hint, a review note, a context, a page-supplied revision). Redaction at the sources stays as a second layer.
   scrubReceipt(receipt);
 
   const records = [
-    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
+    { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, runId, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
     ...stepRecords,
     ...checks.map(check => ({ type: "check", ...check })),
+    ...uncounted.map(check => ({ type: "unconfirmed-check", ...check })),
     ...reviews.map(item => ({ type: "review", ...item })),
     ...contextRecords,
     ...consoleRecords,
@@ -340,7 +398,9 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const detail = { checks, steps: asFiled(stepRecords), contexts: asFiled(contextRecords), console: asFiled(consoleRecords), pageErrors: [...pageErrors], receiptPath: null, evidencePath: null };
 
   // The write goes through receipt-scrub.js: what a failed write and writeReceipt add to the receipt is scrubbed there too.
-  const paths = await writeScrubbedReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir },
+  // `at` is stamped as the receipt joins the chain (stampNow), so runs that overlap never refuse each other; the evidence's
+  // "run" record above keeps the moment the run started.
+  const paths = await writeScrubbedReceipt(receipt, { shot, evidence: evidenceText(records), key, dir: receiptsDir, stampNow: fixedStamp },
     "This run is not evidence. Check the receipts directory (and any file named in the error), fix it and run again.");
   if (paths) { // detail keeps the real paths for callers
     detail.receiptPath = paths.receiptPath;
@@ -350,39 +410,159 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   return receipt;
 }
 
+// The most specs run at once: one per worker, bounded by memory (each run is a browser, and often an app server); see capacity.js.
+export { maxJobs };
+
+// work(item) for every item, at most `jobs` at a time; the results in the order of items.
+// `admit(running)` (optional) resolves when one more item may start; `running()` tells it how many are in flight now.
+export async function inPool(items, jobs, work, { admit } = {}) {
+  const results = new Array(items.length);
+  let next = 0;
+  let inFlight = 0;
+  const running = () => inFlight;
+  const worker = async () => {
+    while (next < items.length) {
+      const release = admit ? await admit(running) : null; // a function that gives the run's slot back, if admit hands one out
+      if (next >= items.length) {
+        await release?.();
+        break;
+      }
+      const i = next++;
+      inFlight += 1;
+      try {
+        results[i] = await work(items[i]);
+      } finally {
+        inFlight -= 1;
+        await release?.();
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(jobs, items.length) }, worker));
+  return results;
+}
+
+// Runs every spec, at most `jobs` at a time. Each run is independent: its own browser, app server and receipt, and one
+// that throws becomes an ERROR for that spec while the others go on. Results come back in the order of specPaths.
+// The slots are shared by every process on this machine (slots.js): separate commands and the queue worker add up to the
+// same ceiling, whatever `jobs` each was given. One governor may be shared by several runSpecs calls (the queue worker does).
+export function runGovernor() {
+  const slotLimit = maxJobs();
+  return createGovernor({ acquire: () => tryAcquireSlot(slotLimit) });
+}
+
+// `shareBrowser` (opt-in, 2 or more): up to that many runs share one Chromium, each in its own context (browser-pool.js). The
+// default, one browser per run, is the most isolated and what a receipt is normally read against; sharing is faster and lighter,
+// and a pooled run's receipt says "(shared browser, own context)" in its browser string.
+export async function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs(), governor = runGovernor(), shareBrowser = 1 } = {}) {
+  const { admit } = governor;
+  const pool = shareBrowser > 1 ? createBrowserPool({ perBrowser: shareBrowser }) : null;
+  try {
+    return await inPool(specPaths, jobs, async specPath => {
+      try {
+        return await runSpec({ specPath, key, receiptsDir, pool });
+      } catch (error) {
+        const message = `the run stopped: ${safeLine(error)}`;
+        return { verdict: "ERROR", spec: null, app: null, totals: null, checks: [], error: message, next: [message, "Run this spec again on its own."] };
+      }
+    }, { admit });
+  } finally {
+    await pool?.close();
+  }
+}
+
+// --share-browser N: a whole number from 1 (one browser per run, the default) up to the pool's limit.
+export function parseShareBrowser(text) {
+  if (text === undefined) return 1;
+  if (!/^[1-9]\d{0,2}$/.test(text) || Number(text) > MAX_SHARE) throw new Error(`--share-browser takes a whole number from 1 to ${MAX_SHARE} (1 is one browser per run, the default)`);
+  return Number(text);
+}
+
+// One exit code for many runs: a failed check says "not done" for sure, so it wins over ERROR (cannot tell), which wins
+// over a PASS that needs review.
+export function combinedExitCode(codes) {
+  for (const code of [EXIT.FAIL, EXIT.ERROR, EXIT_NEEDS_REVIEW]) if (codes.includes(code)) return code;
+  return EXIT.PASS;
+}
+
 const CLI_OPTIONS = {
-  spec: { type: "string" },
+  spec: { type: "string", multiple: true },
   "key-file": { type: "string" },
   receipts: { type: "string" },
+  jobs: { type: "string" },
+  "share-browser": { type: "string" },
   json: { type: "boolean" },
+  "spec-dir": { type: "string", multiple: true },
 };
 
-// CLI: node src/run-spec.js --spec <file.json> --key-file <path> [--receipts <dir>] [--json]. Returns the exit code.
+// The *.json files of one directory, by name, so a whole suite runs from one command.
+export async function specsInDir(dir) {
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch (error) {
+    throw new Error(`--spec-dir could not be read: ${safeLine(error)}`);
+  }
+  const specs = names.filter(name => name.endsWith(".json")).sort().map(name => join(dir, name));
+  if (specs.length === 0) throw new Error("--spec-dir holds no .json spec files");
+  return specs;
+}
+
+const asJson = receipt => ({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null });
+
+function printReceipt(receipt, label) {
+  const totals = receipt.totals;
+  console.log(`${receipt.verdict} ${receipt.spec ?? label} ${receipt.app ?? ""}`.trimEnd());
+  if (totals) console.log(`  ${totals.checks} checks, ${totals.passed} passed, ${totals.failed} failed`);
+  for (const check of receipt.checks) console.log(`  FAIL step ${check.step}: ${check.name}`);
+  if (receipt.review?.total > 0) {
+    console.log(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge (the run is not "done")`);
+    for (const item of receipt.review.items) console.log(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
+  }
+  if (receipt.error) console.log(`  error: ${receipt.error}`);
+  if (receipt.detail?.receiptPath) console.log(`  receipt:  ${scrubReceiptFile(receipt.detail.receiptPath)}`);
+  if (receipt.detail?.evidencePath) console.log(`  evidence: ${scrubReceiptFile(receipt.detail.evidencePath)}`);
+}
+
+function parseJobs(text, limit) {
+  if (text === undefined) return limit;
+  if (!/^[1-9]\d{0,5}$/.test(text)) throw new Error("--jobs takes a whole number of 1 or more");
+  const jobs = Number(text);
+  if (jobs > limit) console.error(`--jobs ${jobs} is more than this machine can carry (${availableParallelism()} workers, ${Math.round(memoryLimit() / 1024 ** 3)} GiB memory); running ${limit} at a time`);
+  return Math.min(jobs, limit);
+}
+
+// CLI: node src/run-spec.js --spec <file.json> [--spec ...] --key-file <path> [--receipts <dir>] [--jobs N] [--json].
+// One spec prints as it always has; several print in the order given, then one line of totals. Returns the exit code.
 export async function main(args) {
   const values = parseCli(args, CLI_OPTIONS);
   if (process.env.PROOF_LAB_KEY !== undefined) {
     throw new Error("PROOF_LAB_KEY is set in the environment; unset it and pass the key with --key-file <path>");
   }
   if (!values["key-file"]) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
-  if (!values.spec) throw new Error("--spec <file.json> is required");
+  if (!values.spec?.length && !values["spec-dir"]?.length) throw new Error("--spec <file.json> or --spec-dir <dir> is required");
+  const fromDirs = [];
+  for (const dir of values["spec-dir"] ?? []) fromDirs.push(...await specsInDir(dir));
+  // Every named spec runs as named: a spec given twice (by --spec or by a folder) runs twice, and concurrent runs are safe.
+  // No path matching on purpose: whether two paths are "the same file" (links, drive-letter case) has no end.
+  const specPaths = [...(values.spec ?? []), ...fromDirs];
+  const jobs = parseJobs(values.jobs, maxJobs());
+  const shareBrowser = parseShareBrowser(values["share-browser"]);
   const key = await signingKeyFromFile(values["key-file"]);
-  const receipt = await runSpec({ specPath: values.spec, key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS });
-  if (values.json) {
-    console.log(JSON.stringify({ ...receipt, receiptFile: receipt.detail?.receiptPath ? scrubReceiptFile(receipt.detail.receiptPath) : null, evidenceFile: receipt.detail?.evidencePath ? scrubReceiptFile(receipt.detail.evidencePath) : null }, null, 2));
-  } else {
-    const totals = receipt.totals;
-    console.log(`${receipt.verdict} ${receipt.spec ?? "(no spec)"} ${receipt.app ?? ""}`.trimEnd());
-    if (totals) console.log(`  ${totals.checks} checks, ${totals.passed} passed, ${totals.failed} failed`);
-    for (const check of receipt.checks) console.log(`  FAIL step ${check.step}: ${check.name}`);
-    if (receipt.review?.total > 0) {
-      console.log(`  NEEDS REVIEW: ${receipt.review.total} claim(s) only a human can judge (the run is not "done")`);
-      for (const item of receipt.review.items) console.log(`    step ${item.step}: ${item.name}${item.note ? ` (${item.note})` : ""}`);
-    }
-    if (receipt.error) console.log(`  error: ${receipt.error}`);
-    if (receipt.detail?.receiptPath) console.log(`  receipt:  ${scrubReceiptFile(receipt.detail.receiptPath)}`);
-    if (receipt.detail?.evidencePath) console.log(`  evidence: ${scrubReceiptFile(receipt.detail.evidencePath)}`);
+  const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs, shareBrowser });
+  if (receipts.length === 1) {
+    if (values.json) console.log(JSON.stringify(asJson(receipts[0]), null, 2));
+    else printReceipt(receipts[0], "(no spec)");
+    return exitCodeOf(receipts[0]);
   }
-  return exitCodeOf(receipt);
+  if (values.json) {
+    console.log(JSON.stringify(receipts.map(asJson), null, 2));
+  } else {
+    // A spec that never got a name (it could not be read) is told apart by its place on the command line, not its path.
+    receipts.forEach((receipt, i) => printReceipt(receipt, `(spec ${i + 1})`));
+    const counts = Object.entries(Object.groupBy(receipts, receipt => receipt.verdict)).map(([verdict, list]) => `${list.length} ${verdict}`);
+    console.log(`${receipts.length} of ${specPaths.length} specs run, ${Math.min(jobs, receipts.length)} at a time: ${counts.join(", ")}`);
+  }
+  return combinedExitCode(receipts.map(exitCodeOf));
 }
 
 if (isMainModule(import.meta.url)) await runCli(() => main(process.argv.slice(2)));

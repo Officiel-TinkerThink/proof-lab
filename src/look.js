@@ -109,7 +109,14 @@ export async function look({ url, specPath, until, screenshotPath }) {
     let appUrl;
     let firstUrl;
     if (spec) {
-      if (spec.app?.url) appUrl = spec.app.url;
+      if (spec.app?.url) {
+        appUrl = spec.app.url;
+        // The spec's steps run for real: against a shared or live app they create records and consume throttles.
+        const host = new URL(appUrl).hostname;
+        if (!["127.0.0.1", "localhost", "[::1]"].includes(host)) {
+          console.error(`note: look --spec replays the spec's steps against ${host}, which is not this machine; they may change that app's state (--until limits how many run).`);
+        }
+      }
       else {
         server = await startApp({ bug: spec.app?.bug });
         appUrl = server.url;
