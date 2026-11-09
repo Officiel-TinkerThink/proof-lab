@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GENESIS, SEAL_WAIT_MS, fixedStamp, verifyChain, writeReceipt } from "../src/chain.js";
 import { combinedExitCode, inPool, maxJobs } from "../src/run-spec.js";
-import { POLL_MS, cpuBusyBetween, createGovernor, headroom } from "../src/capacity.js";
+import { POLL_MS, cpuBusyBetween, createGovernor, headroom, memoryAvailable, memoryLimit } from "../src/capacity.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI = join(ROOT, "src", "run-spec.js");
@@ -102,6 +102,21 @@ test("maxJobs is two per worker, bounded by memory, at least one", () => {
   assert.equal(maxJobs(1, 64 * GIB), 2);
   assert.equal(maxJobs(4, 0), 1);
   assert.ok(maxJobs() >= 1);
+});
+
+test("a container's memory limit is the memory the runs are planned against, not the host's", () => {
+  // As measured in a Docker container started with --memory=2g on a 12 GiB VM: totalmem() 12 GiB, constrainedMemory() 2 GiB.
+  assert.equal(memoryLimit({ total: 12 * GIB, constrained: 2 * GIB }), 2 * GIB);
+  assert.equal(maxJobs(8, memoryLimit({ total: 12 * GIB, constrained: 2 * GIB })), 1, "2 GiB carries one run, not the eight the host's 12 GiB would");
+  // No limit: Node reports an absurdly large constrained value (or none, or 0), and the machine's memory stands.
+  assert.equal(memoryLimit({ total: 12 * GIB, constrained: 18446744073709552000 }), 12 * GIB);
+  assert.equal(memoryLimit({ total: 12 * GIB, constrained: undefined }), 12 * GIB);
+  assert.equal(memoryLimit({ total: 12 * GIB, constrained: 0 }), 12 * GIB);
+  // Free memory is what is free inside the limit: availableMemory() (2.1 GB in the container) rather than the host's 11.8 GiB.
+  assert.equal(memoryAvailable({ free: 11 * GIB, available: 2 * GIB }), 2 * GIB);
+  assert.equal(memoryAvailable({ free: 1 * GIB, available: 5 * GIB }), 1 * GIB);
+  assert.equal(memoryAvailable({ free: 3 * GIB, available: undefined }), 3 * GIB, "a Node without availableMemory() keeps the machine's number");
+  assert.ok(memoryLimit() > 0 && memoryAvailable() >= 0);
 });
 
 test("headroom refuses a start on low memory, hot CPU or high load", () => {

@@ -17,8 +17,20 @@ export const POLL_MS = 1000;
 // number, keeps the machine from being overloaded: it holds a new run back above CPU_BUSY_LIMIT or when memory runs short.
 export const RUNS_PER_WORKER = 2;
 
+// The memory this process can use: the machine's, or the container's when it has a limit. Node's totalmem() and freemem() report
+// the host's even inside a container started with --memory, so a limited container would be planned against memory it does not
+// have and the kernel would kill a browser (OOM). constrainedMemory() is the cgroup limit (an absurdly large number when there is
+// none); availableMemory() is what is still free within it. Both are read from the cgroup on Linux and fall back to the machine's
+// numbers where Node has no such call. The sources are parameters so a test can state a container.
+export function memoryLimit({ total = totalmem(), constrained = process.constrainedMemory?.() } = {}) {
+  return Number.isFinite(constrained) && constrained > 0 && constrained < total ? constrained : total;
+}
+export function memoryAvailable({ free = freemem(), available = process.availableMemory?.() } = {}) {
+  return Number.isFinite(available) && available >= 0 ? Math.min(available, free) : free;
+}
+
 // The most runs worth planning for: RUNS_PER_WORKER per worker, and no more than memory allows. At least one.
-export function maxJobs(parallelism = availableParallelism(), totalMemory = totalmem(), perRun = RUN_MEMORY_BYTES) {
+export function maxJobs(parallelism = availableParallelism(), totalMemory = memoryLimit(), perRun = RUN_MEMORY_BYTES) {
   const byMemory = Math.floor((totalMemory * TOTAL_MEMORY_SHARE) / perRun);
   return Math.max(1, Math.min(parallelism * RUNS_PER_WORKER, byMemory));
 }
@@ -48,7 +60,7 @@ export function headroom({ freeMemory, cpuBusy, load1, cores }, perRun = RUN_MEM
 // The readings of this machine now. cpuBusy is measured over the time since `previous` (a cpus() reading).
 export function readMachine(previous) {
   const now = cpus();
-  return { reading: { freeMemory: freemem(), cpuBusy: previous ? cpuBusyBetween(previous, now) : 0, load1: loadavg()[0], cores: now.length || 1 }, cpus: now };
+  return { reading: { freeMemory: memoryAvailable(), cpuBusy: previous ? cpuBusyBetween(previous, now) : 0, load1: loadavg()[0], cores: now.length || 1 }, cpus: now };
 }
 
 // admit(running) resolves, with a function that gives the run's slot back, when one more run may start.

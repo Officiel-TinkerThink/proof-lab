@@ -4,8 +4,8 @@
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { availableParallelism, totalmem } from "node:os";
-import { createGovernor, maxJobs } from "./capacity.js";
+import { availableParallelism } from "node:os";
+import { createGovernor, maxJobs, memoryLimit } from "./capacity.js";
 import { tryAcquireSlot } from "./slots.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -527,7 +527,7 @@ function parseJobs(text, limit) {
   if (text === undefined) return limit;
   if (!/^[1-9]\d{0,5}$/.test(text)) throw new Error("--jobs takes a whole number of 1 or more");
   const jobs = Number(text);
-  if (jobs > limit) console.error(`--jobs ${jobs} is more than this machine can carry (${availableParallelism()} workers, ${Math.round(totalmem() / 1024 ** 3)} GiB memory); running ${limit} at a time`);
+  if (jobs > limit) console.error(`--jobs ${jobs} is more than this machine can carry (${availableParallelism()} workers, ${Math.round(memoryLimit() / 1024 ** 3)} GiB memory); running ${limit} at a time`);
   return Math.min(jobs, limit);
 }
 
