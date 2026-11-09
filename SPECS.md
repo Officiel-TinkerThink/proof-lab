@@ -7,7 +7,7 @@ headless browser through it, records every check, and writes a signed **receipt*
 ```
 node src/doctor.js  --key-file <key> [--spec specs/x.json]      is the setup sound?        exit 0 / 2
 node src/run-spec.js --spec specs/x.json --key-file <key>       run it, write the receipt  exit 0 PASS / 1 FAIL / 2 ERROR / 3 PASS but needs review
-                     [--spec specs/y.json ...] [--jobs N]       several specs, concurrently (see "Many specs at once")
+                     [--spec specs/y.json ...] [--jobs N] [--share-browser N]   several specs, concurrently (see "Many specs at once")
                      [--spec-dir specs]                         every .json in a folder, by name
 node src/validate.js --spec specs/x.json [--spec ...] [--json]   check specs without running them  exit 0 / 2
 node src/status.js  ... [--max-attempts N] [--max-age SECONDS]  (see the stop rules below)
@@ -26,12 +26,23 @@ environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or 
 `run` takes `--spec` more than once and runs the specs concurrently, asynchronously in one process: at most two runs per
 worker (`os.availableParallelism()`; a browser run mostly waits, so a core serves more than one), and no more than memory allows (about 1 GiB per run, 75% of the machine's memory).
 A governor also holds each new run back while free memory is low, CPU use is above 85% or the load average per core is above
-1.25 (new runs start one at a time, each judged on CPU measured over a fresh quarter-second window that already includes the run started before it, so a burst cannot overload the machine); with nothing running it
+1.25 (new runs are judged one at a time on CPU measured over a quarter-second window; one measurement serves the next few starts, each of which is counted as a core of CPU and a run's memory the measurement could not see yet, and it is taken again after half a second, so a burst cannot overload the machine); with nothing running it
 always lets one start, so the batch always finishes. `--jobs N` lowers the ceiling; a higher number is cut to it, with a note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
 that cannot be read, or a run that stops, is an ERROR for that spec only; the others go on. The results print in the order of
 the `--spec` flags (`--json` prints a list), then one line of totals ("N of M specs run"). `--spec-dir <dir>` adds every `.json` file of a
 folder, by name, to the specs given with `--spec`. The exit code is 1 if any spec FAILed, else 2 if any
 was ERROR, else 3 if any PASS needs review, else 0. One `--spec` prints and exits exactly as before.
+
+**Sharing a browser (opt-in).** By default every run launches its own Chromium. `--share-browser N` (on `run` and `queue submit`,
+1 to 32; 1 is the default) lets up to N runs of the batch share one Chromium, each in its own browser context: its own cookies,
+storage, cache and pages (checked: a cookie set in one context is not seen by another, and a cacheable script is fetched once per
+context), but not its own process tree. It is faster and lighter (about twice the specs per second and half to two thirds of the
+Chromium memory on short specs, measured on one developer machine) and has two costs. The failure domain is shared: if the browser dies, every
+run on it ends ERROR ("the browser stopped during this run"), never FAIL or PASS, and the other browsers' runs go on. And the
+receipt says it: the browser string of the evidence reads `chromium <version> (shared browser, own context)`, so no receipt claims an
+independent browser it did not have. Whether a shared browser is acceptable evidence for your release is for the validation owner
+to decide; leave the flag off where an independent browser per run is what the receipt must show. A browser that disappears under
+any run, shared or not, is ERROR, never a verdict on the app.
 
 Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
 the chain, inside the lock, so whichever run finishes first comes first and no run refuses another.
@@ -47,7 +58,7 @@ For a batch nobody wants to wait for, `node src/lab.js queue ...` (jobs live in 
 
 | command | what it does |
 |---|---|
-| `queue submit (--spec f ... \| --spec-dir d) --key-file k [--jobs N] [--no-worker]` | writes a job, prints its id at once, and starts a background worker unless one is running |
+| `queue submit (--spec f ... \| --spec-dir d) --key-file k [--jobs N] [--share-browser N] [--no-worker]` | writes a job, prints its id at once, and starts a background worker unless one is running |
 | `queue status --id <id> [--json]` | the job's state (`queued`, `running`, `done`, `cancelled`, `interrupted`), and when done each spec's verdict and receipt file. Exit: 4 not finished; once finished the same codes as `run` (0 pass, 1 fail, 2 error, 3 needs review) |
 | `queue list [--state s] [--limit N]` | the jobs, newest first |
 | `queue cancel --id <id>` | stops a job that is still queued (a running job cannot be cancelled) |

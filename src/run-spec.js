@@ -17,6 +17,7 @@ import { describeMatches, describeTarget, hasTarget } from "./spec/locate.js";
 import { DEFAULT_TIMEOUT_MS } from "./spec/poll.js";
 import { validateSpec } from "./spec/schema.js";
 import { openSession } from "./spec/session.js";
+import { MAX_SHARE, createBrowserPool } from "./spec/browser-pool.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceipt, scrubReceiptFile, scrubText, writeScrubbedReceipt } from "./receipt-scrub.js";
 import { STEPS } from "./spec/steps.js";
@@ -169,7 +170,7 @@ async function revisionDrift(seen) {
 
 // Runs one spec file. Returns the receipt as stored, plus a non-stored `detail` (the evidence, in memory).
 // An invalid spec returns ERROR and writes nothing.
-export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } = {}) {
+export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, pool = null } = {}) {
   const receipt = {
     verdict: "ERROR", app: null, bug: null, spec: null, revision: null, at: fixedStamp(),
     totals: null, checks: [], review: { total: 0, items: [] }, evidence: null, pageErrors: [], screenshot: null, error: null, next: [],
@@ -229,7 +230,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   const seenRevisions = new Map();
   let changedWhileRunning = null;
   let server = null;
-  let browser = null;
+  let closeSession = null;
+  let browserLost = () => false;
   let shot = null;
   let browserVersion = null;
   let completed = false;
@@ -247,6 +249,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
       firstUrl,
       timeoutMs,
       env: spec.env,
+      pool,
       hooks: {
         onLaunch: version => { browserVersion = version; },
         onPageError: message => noteError(message),
@@ -269,7 +272,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
         },
       },
     });
-    browser = session.browser;
+    closeSession = session.close;
+    browserLost = session.lost;
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
 
@@ -299,8 +303,16 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
     receipt.verdict = "ERROR";
     receipt.error = `run failed: ${safeLine(error)}`;
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (closeSession) await closeSession().catch(() => {});
     if (server) await server.close().catch(() => {});
+  }
+
+  // A browser that went away under the run (crashed, killed, or took its pool-mates down) is no verdict on the app: whatever the
+  // steps then reported ("target closed" as a failed check) is not evidence, so the run is ERROR, never FAIL or PASS.
+  if (browserLost()) {
+    completed = false;
+    receipt.verdict = "ERROR";
+    receipt.error = `run failed: the browser stopped during this run, so nothing it showed is evidence${receipt.error ? ` (${receipt.error})` : ""}`;
   }
 
   if (completed) {
@@ -417,16 +429,31 @@ export function runGovernor() {
   return createGovernor({ acquire: () => tryAcquireSlot(slotLimit) });
 }
 
-export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs(), governor = runGovernor() } = {}) {
+// `shareBrowser` (opt-in, 2 or more): up to that many runs share one Chromium, each in its own context (browser-pool.js). The
+// default, one browser per run, is the most isolated and what a receipt is normally read against; sharing is faster and lighter,
+// and a pooled run's receipt says "(shared browser, own context)" in its browser string.
+export async function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs(), governor = runGovernor(), shareBrowser = 1 } = {}) {
   const { admit } = governor;
-  return inPool(specPaths, jobs, async specPath => {
-    try {
-      return await runSpec({ specPath, key, receiptsDir });
-    } catch (error) {
-      const message = `the run stopped: ${safeLine(error)}`;
-      return { verdict: "ERROR", spec: null, app: null, totals: null, checks: [], error: message, next: [message, "Run this spec again on its own."] };
-    }
-  }, { admit });
+  const pool = shareBrowser > 1 ? createBrowserPool({ perBrowser: shareBrowser }) : null;
+  try {
+    return await inPool(specPaths, jobs, async specPath => {
+      try {
+        return await runSpec({ specPath, key, receiptsDir, pool });
+      } catch (error) {
+        const message = `the run stopped: ${safeLine(error)}`;
+        return { verdict: "ERROR", spec: null, app: null, totals: null, checks: [], error: message, next: [message, "Run this spec again on its own."] };
+      }
+    }, { admit });
+  } finally {
+    await pool?.close();
+  }
+}
+
+// --share-browser N: a whole number from 1 (one browser per run, the default) up to the pool's limit.
+export function parseShareBrowser(text) {
+  if (text === undefined) return 1;
+  if (!/^[1-9]\d{0,2}$/.test(text) || Number(text) > MAX_SHARE) throw new Error(`--share-browser takes a whole number from 1 to ${MAX_SHARE} (1 is one browser per run, the default)`);
+  return Number(text);
 }
 
 // One exit code for many runs: a failed check says "not done" for sure, so it wins over ERROR (cannot tell), which wins
@@ -441,6 +468,7 @@ const CLI_OPTIONS = {
   "key-file": { type: "string" },
   receipts: { type: "string" },
   jobs: { type: "string" },
+  "share-browser": { type: "string" },
   json: { type: "boolean" },
   "spec-dir": { type: "string", multiple: true },
 };
@@ -497,8 +525,9 @@ export async function main(args) {
   // No path matching on purpose: whether two paths are "the same file" (links, drive-letter case) has no end.
   const specPaths = [...(values.spec ?? []), ...fromDirs];
   const jobs = parseJobs(values.jobs, maxJobs());
+  const shareBrowser = parseShareBrowser(values["share-browser"]);
   const key = await signingKeyFromFile(values["key-file"]);
-  const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs });
+  const receipts = await runSpecs(specPaths, { key, receiptsDir: values.receipts ?? DEFAULT_RECEIPTS, jobs, shareBrowser });
   if (receipts.length === 1) {
     if (values.json) console.log(JSON.stringify(asJson(receipts[0]), null, 2));
     else printReceipt(receipts[0], "(no spec)");

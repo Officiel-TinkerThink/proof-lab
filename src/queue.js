@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { signingKeyFromFile } from "./chain.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceiptFile, scrubText } from "./receipt-scrub.js";
-import { combinedExitCode, exitCodeOf, maxJobs, runGovernor, runSpecs, specsInDir } from "./run-spec.js";
+import { combinedExitCode, exitCodeOf, maxJobs, parseShareBrowser, runGovernor, runSpecs, specsInDir } from "./run-spec.js";
 import { openExclusive, processAlive, reclaimIfStale } from "./slots.js";
 import { isMainModule, parseCli } from "./spec/util.js";
 
@@ -269,7 +269,7 @@ export async function runJob(receiptsDir, job, { run = runSpecs, loadKey = signi
   try {
     if (process.env.PROOF_LAB_KEY !== undefined) throw new Error("PROOF_LAB_KEY is set in the worker's environment; unset it and start the worker again");
     const key = await loadKey(job.keyFile);
-    const receipts = await run(job.specs, { key, receiptsDir, jobs: Math.min(job.jobs ?? Infinity, maxJobs()), governor });
+    const receipts = await run(job.specs, { key, receiptsDir, jobs: Math.min(job.jobs ?? Infinity, maxJobs()), governor, shareBrowser: job.shareBrowser ?? 1 });
     outcome = { exitCode: combinedExitCode(receipts.map(exitCodeOf)), results: receipts.map((receipt, i) => summaryOf(receipt, job.specs[i])), error: null };
   } catch (error) {
     outcome = { exitCode: 2, results: [], error: `the job could not run: ${safeLine(error)}` };
@@ -361,6 +361,7 @@ async function submit(values, receiptsDir) {
   if (!values["key-file"]) throw new Error("--key-file <path> is required: the signing key is read from a 0600 file");
   if (!values.spec?.length && !values["spec-dir"]?.length) throw new Error("--spec <file.json> or --spec-dir <dir> is required");
   if (values.jobs !== undefined && !/^[1-9]\d{0,5}$/.test(values.jobs)) throw new Error("--jobs takes a whole number of 1 or more");
+  const shareBrowser = parseShareBrowser(values["share-browser"]);
   const fromDirs = [];
   for (const dir of values["spec-dir"] ?? []) fromDirs.push(...await specsInDir(dir));
   const specs = [...(values.spec ?? []), ...fromDirs].map(path => resolve(path));
@@ -372,7 +373,7 @@ async function submit(values, receiptsDir) {
   await signingKeyFromFile(keyFile); // fail now, not when the job starts; the key itself is dropped at once
   await ensureDirs(receiptsDir);
   const id = `${String(Date.now()).padStart(13, "0")}-${randomBytes(6).toString("hex")}`;
-  const job = { id, state: "queued", submittedAt: new Date().toISOString(), submittedBy: userInfo().username, host: hostname(), specs, keyFile, jobs: values.jobs === undefined ? null : Number(values.jobs), startedAt: null, finishedAt: null, workerPid: null, exitCode: null, results: null, error: null };
+  const job = { id, state: "queued", submittedAt: new Date().toISOString(), submittedBy: userInfo().username, host: hostname(), specs, keyFile, jobs: values.jobs === undefined ? null : Number(values.jobs), shareBrowser, startedAt: null, finishedAt: null, workerPid: null, exitCode: null, results: null, error: null };
   await writeJson(jobPath(receiptsDir, "queued", id), job);
   const startedWorker = !values["no-worker"] && !(await workerAlive(receiptsDir));
   if (startedWorker) startWorker(receiptsDir);
@@ -454,7 +455,7 @@ async function work(values, receiptsDir) {
 
 const COMMON = { receipts: { type: "string" }, json: { type: "boolean" } };
 const SUBCOMMANDS = {
-  submit: { options: { ...COMMON, spec: { type: "string", multiple: true }, "spec-dir": { type: "string", multiple: true }, "key-file": { type: "string" }, jobs: { type: "string" }, "no-worker": { type: "boolean" } }, run: submit },
+  submit: { options: { ...COMMON, spec: { type: "string", multiple: true }, "spec-dir": { type: "string", multiple: true }, "key-file": { type: "string" }, jobs: { type: "string" }, "share-browser": { type: "string" }, "no-worker": { type: "boolean" } }, run: submit },
   status: { options: { ...COMMON, id: { type: "string" } }, run: status },
   list: { options: { ...COMMON, state: { type: "string" }, limit: { type: "string" } }, run: list },
   cancel: { options: { ...COMMON, id: { type: "string" } }, run: cancel },

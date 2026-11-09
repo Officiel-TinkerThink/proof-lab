@@ -10,6 +10,7 @@ export const TOTAL_MEMORY_SHARE = 0.75;           // the most of the machine's m
 export const CPU_BUSY_LIMIT = 0.85;               // no new run while the CPUs are busier than this
 export const LOAD_PER_CORE_LIMIT = 1.25;          // no new run while the 1-minute load average per core is above this (POSIX)
 export const SAMPLE_MS = 250;                    // the window the CPU is measured over at each admission: also what a started run needs to show in the numbers
+export const SAMPLE_MAX_AGE_MS = 500;           // a CPU sample serves the admissions that follow it for this long, then it is measured again
 export const POLL_MS = 1000;
 
 // A browser run mostly waits (for the page, the network, the app), so a worker serves more than one run. The governor, not this
@@ -56,33 +57,47 @@ export function readMachine(previous) {
 // start on the same stale numbers.
 // Slot: `acquire()` (see slots.js) resolves to a release function, or null while every slot of the machine is held by runs of
 // other processes; it is waited for, since those runs end or their holders are reclaimed. The default has no limit.
-export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = RUN_MEMORY_BYTES, onWait = () => {}, acquire = async () => () => {} } = {}) {
+export function createGovernor({ read = readMachine, sleep = sleepMs, now = Date.now, perRun = RUN_MEMORY_BYTES, onWait = () => {}, acquire = async () => () => {}, sampleMaxAgeMs = SAMPLE_MAX_AGE_MS } = {}) {
   let gate = Promise.resolve();
   // Runs this governor has admitted and not yet seen released. A governor shared by several pools (the queue worker's jobs)
   // counts all of them, so "nothing is running" means nothing, not just nothing in one pool.
   let active = 0;
+  // The last good CPU/memory sample and the runs admitted on it since. A burst of admissions shares one sample instead of each
+  // paying SAMPLE_MS (which capped a burst at about four starts a second): every run admitted on it is counted as a load the
+  // sample could not have seen yet (one core of CPU, `perRun` of memory), so the burst stops by itself when that adds up to no
+  // headroom, and the sample expires after sampleMaxAgeMs. A hold or a failed projection always takes a fresh sample.
+  let sample = null; // { reading, at, admitted }
+  const projected = ({ reading, admitted }) => ({ ...reading, cpuBusy: reading.cpuBusy + admitted / Math.max(1, reading.cores), freeMemory: reading.freeMemory - admitted * perRun });
   const admit = ownRunning => {
     const running = () => Math.max(ownRunning(), active);
     const turn = gate.then(async () => {
       for (;;) {
         if (running() > 0) {
-          // CPU is measured over a fresh window right now: a reading kept from minutes ago would average a spike away.
-          const baseline = read(null).cpus;
-          await sleep(SAMPLE_MS);
-          if (running() > 0) { // else the last run ended during the sample: nothing is running, so do not hold this one back
-            const verdict = headroom(read(baseline).reading, perRun);
-            if (!verdict.ok) {
-              onWait(verdict.reason);
-              await sleep(POLL_MS);
+          if (sample && now() - sample.at < sampleMaxAgeMs) {
+            if (!headroom(projected(sample), perRun).ok) {
+              sample = null; // the projection ran out: measure what is really there before deciding
               continue;
+            }
+          } else {
+            // CPU is measured over a fresh window right now: a reading kept from minutes ago would average a spike away.
+            sample = null;
+            const baseline = read(null).cpus;
+            await sleep(SAMPLE_MS);
+            if (running() > 0) { // else the last run ended during the sample: nothing is running, so do not hold this one back
+              const reading = read(baseline).reading;
+              const verdict = headroom(reading, perRun);
+              if (!verdict.ok) {
+                onWait(verdict.reason);
+                await sleep(POLL_MS);
+                continue;
+              }
+              sample = { reading, at: now(), admitted: 0 };
             }
           }
         }
         const release = await acquire();
         if (release) {
-          // No pause here: the next admission measures CPU over a fresh window that starts right now, so the run just admitted
-          // is already in what it sees. (A settle pause on top doubled the cost of every admission and capped a burst of short
-          // specs at two starts a second, which is why more jobs bought nothing.)
+          if (sample) sample.admitted += 1; // not yet in any reading: the next admission on this sample counts it
           active += 1;
           let given = false;
           return async () => {
@@ -92,6 +107,7 @@ export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = R
             await release();
           };
         }
+        sample = null; // waited for a slot: the numbers are old by the time one is free
         onWait("slots");
         await sleep(POLL_MS);
       }

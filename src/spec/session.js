@@ -19,15 +19,35 @@ export function contextOptionsOf(env) {
 }
 
 // hooks: onLaunch(browserVersion), onPageError(message), onConsole(level, text), onResponse(response), onRequestFailed(request), all optional.
-// Returns { browser, page, adopt(page), browserVersion, close }. close() never throws. Navigation to firstUrl is part of opening:
+// Returns { browser, page, adopt(page), browserVersion, close, lost }. close() never throws. Navigation to firstUrl is part of opening:
 // if it fails the browser is closed again and the error is thrown.
-export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
-  const browser = await chromium.launch({ headless: true, env: environmentWithoutKey() });
-  const close = () => browser.close().catch(() => {});
-  const browserVersion = `chromium ${browser.version()}`;
+// With `pool` (browser-pool.js, opt-in) the browser is leased from the pool and shared with other runs: close() then closes only
+// this run's context and gives the lease back, and the browser string says "shared" so the receipt never claims more isolation
+// than the run had. `lost()` tells whether the browser went away under the run (a crash is not a verdict on the app).
+export async function openSession({ firstUrl, timeoutMs, env, hooks = {}, pool = null }) {
+  const lease = pool ? await pool.lease() : null;
+  let browser;
+  try {
+    browser = lease ? lease.browser : await chromium.launch({ headless: true, env: environmentWithoutKey() });
+  } catch (error) {
+    lease?.release();
+    throw error;
+  }
+  let disconnected = false;
+  let closing = false;
+  if (!lease) browser.on("disconnected", () => { if (!closing) disconnected = true; }); // a pooled browser is watched once, by the pool
+  const lost = () => disconnected || Boolean(lease?.lost());
+  let context = null;
+  const close = async () => {
+    closing = true; // closing it ourselves is no loss: only a disconnect before this point counts
+    if (!lease) return browser.close().catch(() => {});
+    await context?.close().catch(() => {});
+    lease.release();
+  };
+  const browserVersion = `chromium ${browser.version()}${lease ? " (shared browser, own context)" : ""}`;
   hooks.onLaunch?.(browserVersion); // before the first navigation, so a run that fails there still records its browser
   try {
-    const context = await browser.newContext(contextOptionsOf(env));
+    context = await browser.newContext(contextOptionsOf(env));
     // The first page and every popup get the same timeouts and hooks: an error on a second tab is still the app's error.
     // Idempotent: the context's "page" event and an expectation block can both adopt the same popup, and hooks must not double.
     const adopted = new WeakSet();
@@ -46,7 +66,7 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {} }) {
     context.on("page", adopt);
     const page = adopt(await context.newPage());
     await page.goto(firstUrl, { waitUntil: "load" });
-    return { browser, page, adopt, browserVersion, close };
+    return { browser, page, adopt, browserVersion, close, lost };
   } catch (error) {
     await close();
     throw error;

@@ -166,6 +166,58 @@ test("the governor lets a run start when the last one ends during the CPU sample
   assert.deepEqual(waits, []);
 });
 
+test("a burst of admissions shares one CPU sample, counts each run on it as load, and measures again when that runs out", async () => {
+  let sleeps = 0;
+  const { admit } = createGovernor({
+    read: () => ({ reading: { freeMemory: 20 * GIB, cpuBusy: 0.05, load1: 0, cores: 4 }, cpus: [] }),
+    sleep: async () => { sleeps += 1; },
+    now: () => 0, // the sample never expires by age here: only the projection ends it
+  });
+  const gives = [];
+  for (let i = 0; i < 6; i += 1) gives.push(await admit(() => 0));
+  // #1 nothing running: no sample. #2 measures (1). #3-#5 ride that sample: 0.05 + 1/4, 2/4, 3/4 are all within 0.85.
+  // #6 would project 1.05: measures again (2).
+  assert.equal(sleeps, 2);
+  for (const give of gives) await give();
+});
+
+test("a burst on one sample is also bounded by memory: each run on it counts as a whole run's memory", async () => {
+  let sleeps = 0;
+  const { admit } = createGovernor({
+    read: () => ({ reading: { freeMemory: 4 * GIB, cpuBusy: 0.01, load1: 0, cores: 64 }, cpus: [] }),
+    sleep: async () => { sleeps += 1; },
+    now: () => 0,
+  });
+  const gives = [];
+  for (let i = 0; i < 5; i += 1) gives.push(await admit(() => 0));
+  // 4 GiB free, 1 GiB per run and 1 GiB reserve: #2 measures, #3 and #4 ride it (3 and 2 GiB left), #5 would leave 1 GiB: measures.
+  assert.equal(sleeps, 2);
+  for (const give of gives) await give();
+});
+
+test("a sample older than its limit is measured again, and a hold always takes a fresh one", async () => {
+  let clock = 0;
+  let hot = false;
+  let reads = 0;
+  const waits = [];
+  const { admit } = createGovernor({
+    read: () => { reads += 1; return { reading: { freeMemory: 20 * GIB, cpuBusy: hot ? 0.99 : 0.05, load1: 0, cores: 64 }, cpus: [] }; },
+    sleep: async ms => { if (ms === POLL_MS) hot = false; },
+    now: () => clock,
+    onWait: reason => waits.push(reason),
+  });
+  await admit(() => 0); // no sample
+  await admit(() => 0); // measures: 2 reads
+  assert.equal(reads, 2);
+  await admit(() => 0); // rides the sample: no read
+  assert.equal(reads, 2);
+  clock = 10_000;
+  hot = true;
+  await admit(() => 0); // too old: measures (2 reads), finds it hot, holds, measures again (2 reads), then admits
+  assert.deepEqual(waits, ["cpu"]);
+  assert.equal(reads, 6);
+});
+
 test("inPool with admit starts items only when admitted and still never exceeds `jobs`", async () => {
   let running = 0;
   let peak = 0;
@@ -173,6 +225,7 @@ test("inPool with admit starts items only when admitted and still never exceeds 
   const { admit } = createGovernor({
     read: () => ({ reading: { freeMemory: 8 * GIB, cpuBusy: running >= 2 ? 0.99 : 0.1, load1: 0, cores: 4 }, cpus: [] }),
     sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 5))),
+    sampleMaxAgeMs: 0, // every admission measures: the mock's CPU follows `running` exactly
   });
   const results = await inPool([1, 2, 3, 4, 5, 6], 4, async n => {
     running += 1;
