@@ -9,8 +9,8 @@ export const MEMORY_RESERVE_BYTES = 1024 ** 3;    // always left for the OS and 
 export const TOTAL_MEMORY_SHARE = 0.75;           // the most of the machine's memory the runs may be planned against
 export const CPU_BUSY_LIMIT = 0.85;               // no new run while the CPUs are busier than this
 export const LOAD_PER_CORE_LIMIT = 1.25;          // no new run while the 1-minute load average per core is above this (POSIX)
-export const SETTLE_MS = 750;                     // a started run needs time to show in the numbers before the next is judged
-export const SAMPLE_MS = 500;                     // the window the CPU is measured over at each admission
+export const SETTLE_MS = 250;                    // a started run needs time to show in the numbers before the next is judged
+export const SAMPLE_MS = 250;                    // the window the CPU is measured over at each admission
 export const POLL_MS = 1000;
 
 // The most runs worth planning for: one per worker, and no more than memory allows. At least one.
@@ -59,6 +59,7 @@ export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = R
         // CPU is measured over a fresh window right now: a reading kept from minutes ago would average a spike away.
         const baseline = read(null).cpus;
         await sleep(SAMPLE_MS);
+        if (running() === 0) return; // the last run ended during the sample: nothing is running, so do not hold this one back
         const verdict = headroom(read(baseline).reading, perRun);
         if (verdict.ok) break;
         onWait(verdict.reason);

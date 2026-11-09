@@ -137,6 +137,18 @@ test("the governor lets the first run start at once and holds later ones while t
   assert.deepEqual(waits, ["cpu"]);
 });
 
+test("the governor lets a run start when the last one ends during the CPU sample", async () => {
+  let inFlight = 1;
+  const waits = [];
+  const { admit } = createGovernor({
+    read: () => ({ reading: { freeMemory: 8 * GIB, cpuBusy: 0.99, load1: 0, cores: 4 }, cpus: [] }),
+    sleep: async () => { inFlight = 0; },
+    onWait: reason => waits.push(reason),
+  });
+  await admit(() => inFlight);
+  assert.deepEqual(waits, []);
+});
+
 test("inPool with admit starts items only when admitted and still never exceeds `jobs`", async () => {
   let running = 0;
   let peak = 0;
