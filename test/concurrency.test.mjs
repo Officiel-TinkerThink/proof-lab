@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GENESIS, SEAL_WAIT_MS, fixedStamp, verifyChain, writeReceipt } from "../src/chain.js";
 import { combinedExitCode, inPool, maxJobs } from "../src/run-spec.js";
+import { cpuBusyBetween, createGovernor, headroom } from "../src/capacity.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI = join(ROOT, "src", "run-spec.js");
@@ -91,13 +92,68 @@ test("many writers in one process, each with its own start stamp, all seal into 
   assert.equal(result.checked, 8);
 });
 
-test("maxJobs is half the machine's workers, at least one", () => {
-  assert.equal(maxJobs(16), 8);
-  assert.equal(maxJobs(8), 4);
-  assert.equal(maxJobs(3), 1);
-  assert.equal(maxJobs(2), 1);
-  assert.equal(maxJobs(1), 1);
+const GIB = 1024 ** 3;
+
+test("maxJobs is one per worker, bounded by memory, at least one", () => {
+  assert.equal(maxJobs(16, 64 * GIB), 16);
+  assert.equal(maxJobs(16, 8 * GIB), 6);
+  assert.equal(maxJobs(8, 1 * GIB), 1);
+  assert.equal(maxJobs(1, 64 * GIB), 1);
+  assert.equal(maxJobs(4, 0), 1);
   assert.ok(maxJobs() >= 1);
+});
+
+test("headroom refuses a start on low memory, hot CPU or high load", () => {
+  const ok = { freeMemory: 8 * GIB, cpuBusy: 0.3, load1: 1, cores: 8 };
+  assert.equal(headroom(ok).ok, true);
+  assert.equal(headroom({ ...ok, freeMemory: 1.5 * GIB }).reason, "memory");
+  assert.equal(headroom({ ...ok, cpuBusy: 0.95 }).reason, "cpu");
+  assert.equal(headroom({ ...ok, load1: 20 }).reason, "load");
+});
+
+test("cpuBusyBetween measures the busy share of all CPUs", () => {
+  const t = (idle, user) => ({ times: { user, nice: 0, sys: 0, idle, irq: 0 } });
+  assert.equal(cpuBusyBetween([t(0, 0), t(0, 0)], [t(50, 50), t(50, 50)]), 0.5);
+  assert.equal(cpuBusyBetween([t(5, 5)], [t(5, 5)]), 0);
+});
+
+test("the governor lets the first run start at once and holds later ones while there is no headroom", async () => {
+  let inFlight = 0;
+  let hot = true;
+  const waits = [];
+  const { admit } = createGovernor({
+    read: () => ({ reading: { freeMemory: 8 * GIB, cpuBusy: hot ? 0.99 : 0.1, load1: 0, cores: 4 }, cpus: [] }),
+    sleep: async () => { hot = false; },
+    onWait: reason => waits.push(reason),
+  });
+  await admit(() => inFlight);
+  assert.deepEqual(waits, []);
+  inFlight = 1;
+  await admit(() => inFlight);
+  assert.deepEqual(waits, ["cpu"]);
+  hot = true;
+  inFlight = 0;
+  await admit(() => inFlight); // nothing running: never blocks
+  assert.deepEqual(waits, ["cpu"]);
+});
+
+test("inPool with admit starts items only when admitted and still never exceeds `jobs`", async () => {
+  let running = 0;
+  let peak = 0;
+  // A governor that reports "hot CPU" while two runs are in flight: the pool must keep to two.
+  const { admit } = createGovernor({
+    read: () => ({ reading: { freeMemory: 8 * GIB, cpuBusy: running >= 2 ? 0.99 : 0.1, load1: 0, cores: 4 }, cpus: [] }),
+    sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 5))),
+  });
+  const results = await inPool([1, 2, 3, 4, 5, 6], 4, async n => {
+    running += 1;
+    peak = Math.max(peak, running);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    running -= 1;
+    return n;
+  }, { admit });
+  assert.deepEqual(results, [1, 2, 3, 4, 5, 6]);
+  assert.ok(peak <= 2, `peak ${peak}`);
 });
 
 test("inPool never runs more than `jobs` at once and keeps the order of its items", async () => {

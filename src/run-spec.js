@@ -4,7 +4,8 @@
 // The ops and fields a spec may use are in src/spec/schema.js and documented in SPECS.md.
 import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
+import { createGovernor, maxJobs } from "./capacity.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_HEADER, startApp } from "./server.js";
@@ -375,19 +376,27 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS } 
   return receipt;
 }
 
-// The most specs run at once: half the machine's workers (each run is a browser, and often an app server), at least one.
-export function maxJobs(parallelism = availableParallelism()) {
-  return Math.max(1, Math.floor(parallelism / 2));
-}
+// The most specs run at once: one per worker, bounded by memory (each run is a browser, and often an app server); see capacity.js.
+export { maxJobs };
 
 // work(item) for every item, at most `jobs` at a time; the results in the order of items.
-export async function inPool(items, jobs, work) {
+// `admit(running)` (optional) resolves when one more item may start; `running()` tells it how many are in flight now.
+export async function inPool(items, jobs, work, { admit } = {}) {
   const results = new Array(items.length);
   let next = 0;
+  let inFlight = 0;
+  const running = () => inFlight;
   const worker = async () => {
     while (next < items.length) {
+      if (admit) await admit(running);
+      if (next >= items.length) break;
       const i = next++;
-      results[i] = await work(items[i]);
+      inFlight += 1;
+      try {
+        results[i] = await work(items[i]);
+      } finally {
+        inFlight -= 1;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(jobs, items.length) }, worker));
@@ -397,6 +406,7 @@ export async function inPool(items, jobs, work) {
 // Runs every spec, at most `jobs` at a time. Each run is independent: its own browser, app server and receipt, and one
 // that throws becomes an ERROR for that spec while the others go on. Results come back in the order of specPaths.
 export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs = maxJobs() } = {}) {
+  const { admit } = createGovernor();
   return inPool(specPaths, jobs, async specPath => {
     try {
       return await runSpec({ specPath, key, receiptsDir });
@@ -404,7 +414,7 @@ export function runSpecs(specPaths, { key, receiptsDir = DEFAULT_RECEIPTS, jobs 
       const message = `the run stopped: ${safeLine(error)}`;
       return { verdict: "ERROR", spec: null, app: null, totals: null, checks: [], error: message, next: [message, "Run this spec again on its own."] };
     }
-  });
+  }, { admit });
 }
 
 // One exit code for many runs: a failed check says "not done" for sure, so it wins over ERROR (cannot tell), which wins
@@ -456,7 +466,7 @@ function parseJobs(text, limit) {
   if (text === undefined) return limit;
   if (!/^[1-9]\d{0,5}$/.test(text)) throw new Error("--jobs takes a whole number of 1 or more");
   const jobs = Number(text);
-  if (jobs > limit) console.error(`--jobs ${jobs} is more than half of this machine's ${availableParallelism()} workers; running ${limit} at a time`);
+  if (jobs > limit) console.error(`--jobs ${jobs} is more than this machine can carry (${availableParallelism()} workers, ${Math.round(totalmem() / 1024 ** 3)} GiB memory); running ${limit} at a time`);
   return Math.min(jobs, limit);
 }
 
