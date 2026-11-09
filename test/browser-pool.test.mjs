@@ -102,6 +102,14 @@ test("shared browser: runs pass, share one Chromium, and the evidence says the b
   }
 });
 
+test("shared browser: a run that fails while opening its page still says in the signed receipt that it was to share a browser", TIMEOUT, async t => {
+  const receiptsDir = await receiptsOf(t);
+  const pool = createBrowserPool({ perBrowser: 2, launch: async () => { throw new Error("no chromium"); } });
+  const receipt = await runSpec({ specPath: WAITLIST, key: KEY, receiptsDir, pool });
+  assert.equal(receipt.verdict, "ERROR");
+  assert.ok(receipt.next.includes(SHARED_BROWSER_NOTE));
+});
+
 test("shared browser: a browser that dies after the run released its place is not a loss of that run", TIMEOUT, async () => {
   const pool = createBrowserPool({ perBrowser: 2 });
   const session = await openSession({ firstUrl: "about:blank", timeoutMs: 5000, pool });
@@ -144,7 +152,7 @@ test("shared browser: closing one run leaves the others working; a browser that 
     const specDir = await mkdtemp(join(tmpdir(), "proof-pool-spec-"));
     t.after(() => rm(specDir, { recursive: true, force: true }));
     const slowSpec = join(specDir, "slow.json");
-    await writeFile(slowSpec, JSON.stringify({ name: "slow", steps: [{ op: "assertText", check: "never shows", selector: "[data-testid=\"status\"]", equals: "never", timeout: 30000 }] }));
+    await writeFile(slowSpec, JSON.stringify({ name: "slow", steps: [{ op: "assertText", check: "fresh visitor sees no request", selector: "[data-testid=\"status\"]", equals: "none" }, { op: "assertText", check: "never shows", selector: "[data-testid=\"status\"]", equals: "never", timeout: 30000 }] }));
     const runs = [runSpec({ specPath: slowSpec, key: KEY, receiptsDir, pool }), runSpec({ specPath: slowSpec, key: KEY, receiptsDir, pool })];
     for (let i = 0; i < 100 && pool.browsers().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 20));
     await new Promise(resolve => setTimeout(resolve, 1500));
@@ -161,6 +169,10 @@ test("shared browser: closing one run leaves the others working; a browser that 
       assert.deepEqual(receipt.checks, [], "no failed check of a lost run is shown as a finding");
       assert.equal(receipt.totals.failed, 0);
       assert.ok(receipt.next.includes(SHARED_BROWSER_NOTE), "the signed next steps say the browser was shared");
+      // The evidence keeps the check made before the loss, but as an unconfirmed one that no total counts.
+      const types = (await readFile(receipt.detail.evidencePath, "utf8")).trim().split("\n").map(line => JSON.parse(line).type);
+      assert.ok(!types.includes("check"), "a lost run has no counted check in its evidence");
+      assert.ok(types.includes("unconfirmed-check"), "what was recorded before the loss is kept, marked unconfirmed");
     }
   } finally {
     await pool.close();

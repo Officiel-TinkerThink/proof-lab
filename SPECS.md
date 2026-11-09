@@ -41,7 +41,7 @@ Chromium memory on short specs, measured on one developer machine) and has two c
 run on it ends ERROR ("the browser or one of its pages stopped during this run"), never FAIL or PASS, and the other browsers' runs go on.
 The loss is noticed at once (the run's current step is abandoned the moment the browser disconnects or the page crashes, in under
 a second in the tests, where it used to end at the step's own deadline, 18 to 21 s), and the checks recorded before the loss are not
-counted. And the receipt says it: the browser string of the evidence reads `chromium <version> (shared browser, own context)`, and
+counted: the receipt shows none, and the evidence file keeps them as `unconfirmed-check` records that no total includes. And the receipt says it: the browser string of the evidence reads `chromium <version> (shared browser, own context)`, and
 the signed `next` text of the receipt carries the line "Browser: this run shared one browser with other runs, in its own context;
 it is not an independent browser.", so no receipt claims an independent browser it did not have. Measured as isolated between two
 contexts of one Chromium: cookies, localStorage, sessionStorage, IndexedDB, the Cache API, service workers, BroadcastChannel

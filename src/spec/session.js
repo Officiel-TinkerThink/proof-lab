@@ -44,7 +44,10 @@ export async function openSession({ firstUrl, timeoutMs, env, hooks = {}, pool =
   // A page that crashed (renderer out of memory, killed) leaves calls in flight on it that Playwright can leave pending
   // (microsoft/playwright #31907, #43204 on 1.64.0), so a page crash is a loss of the run too: ERROR, never a verdict on the app.
   let pageCrashed = false;
-  const lost = () => closedLost ?? (disconnected || pageCrashed || Boolean(lease?.lost()));
+  // A call can be rejected ("target closed") a moment before the 'disconnected' event arrives, so the connection itself is asked too:
+  // a run that closes at that moment must still count as lost, not as an app that failed its checks.
+  const gone = () => browser.isConnected?.() === false;
+  const lost = () => closedLost ?? (disconnected || pageCrashed || gone() || Boolean(lease?.lost()));
   let context = null;
   const close = async () => {
     closedLost ??= lost();

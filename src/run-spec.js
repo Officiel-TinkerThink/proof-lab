@@ -122,7 +122,7 @@ export async function runStep(ctx, step) {
         const matches = await describeMatches(ctx.page, step, Number(named[1]));
         if (matches.length > 0) detail = `${detail} ${matches.join(" | ")}`;
       }
-      ctx.record({ ...step, hint }, false, `${step.op} completes`, null, detail);
+      if (!ctx.abandoned) ctx.record({ ...step, hint }, false, `${step.op} completes`, null, detail); // a run that was given up on records nothing more
     }
   } finally {
     for (const cleanup of cleanups) cleanup();
@@ -234,7 +234,8 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
   let server = null;
   let closeSession = null;
   let browserLost = () => false;
-  let browserShared = false;
+  const browserShared = Boolean(pool); // known before the page opens: a run that fails while opening still shared its browser
+  let uncounted = []; // checks recorded before a loss: kept in the evidence, never in the receipt
   let shot = null;
   let browserVersion = null;
   let completed = false;
@@ -277,7 +278,6 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
     });
     closeSession = session.close;
     browserLost = session.lost;
-    browserShared = session.shared;
     const lostSignal = session.whenLost.then(() => LOST);
     const page = session.page;
     receipt.revision = await page.locator('meta[name="app-revision"]').getAttribute("content", { timeout: 1000 }).catch(() => null);
@@ -287,10 +287,11 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
       ctx.index = i + 1;
       const first = checks.length;
       // A step polling a dead page would only stop at its own deadline (its budget plus a grace of 20 s): when the browser goes
-      // away the step is abandoned at once (its late writes are made no-ops by the epoch) and the run ends as ERROR.
+      // away the step is abandoned at once (its late writes are made no-ops by the epoch and `abandoned`) and the run ends as ERROR.
       const outcome = await Promise.race([runStep(ctx, step), lostSignal]);
       if (outcome === LOST) {
         ctx.epoch += 1;
+        ctx.abandoned = true;
         throw new Error("the browser stopped");
       }
       stepRecords.push(outcome);
@@ -322,11 +323,11 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
   // A browser that went away under the run (crashed, killed, or took its pool-mates down) is no verdict on the app: whatever the
   // steps then reported ("target closed" as a failed check) is not evidence, so the run is ERROR, never FAIL or PASS.
   // The checks recorded are dropped from the receipt: a failed one after the loss is "target closed", not a finding, and a run
-  // that cannot tell has no FAIL to show. The evidence keeps every step as it ran.
+  // that cannot tell has no FAIL to show. The evidence keeps what was recorded, as "unconfirmed-check" records that no total counts.
   if (browserLost()) {
     completed = false;
-    const dropped = checks.length;
-    checks.length = 0;
+    uncounted = checks.splice(0);
+    const dropped = uncounted.length;
     receipt.verdict = "ERROR";
     receipt.error = `run failed: the browser or one of its pages stopped during this run (crashed or was killed), so nothing it showed is evidence${dropped > 0 ? ` (${dropped} checks recorded before it stopped are not counted)` : ""}`;
   }
@@ -353,6 +354,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
 
   // Scrub the checks in place first: the receipt's failures, its next steps and the evidence records are all built from them.
   checks.forEach(check => Object.assign(check, scrubRecord(check)));
+  uncounted.forEach(check => Object.assign(check, scrubRecord(check)));
   const { totals, failures } = summarize(checks);
   receipt.totals = totals;
   receipt.checks = failures;
@@ -380,6 +382,7 @@ export async function runSpec({ specPath, key, receiptsDir = DEFAULT_RECEIPTS, p
     { type: "run", spec: receipt.spec, app: receipt.app, revision: receipt.revision, at: receipt.at, runId, timeoutMs, start: typeof spec.app?.start === "string" ? hideAddressText(spec.app.start) : spec.app?.start ?? null, node: process.version, platform: process.platform, browser: browserVersion, env: spec.env ?? null },
     ...stepRecords,
     ...checks.map(check => ({ type: "check", ...check })),
+    ...uncounted.map(check => ({ type: "unconfirmed-check", ...check })),
     ...reviews.map(item => ({ type: "review", ...item })),
     ...contextRecords,
     ...consoleRecords,
