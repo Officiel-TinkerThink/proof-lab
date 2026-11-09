@@ -20,7 +20,7 @@ import { signingKeyFromFile } from "./chain.js";
 import { runCli } from "./cli.js";
 import { safeLine, scrubReceiptFile, scrubText } from "./receipt-scrub.js";
 import { combinedExitCode, exitCodeOf, maxJobs, runGovernor, runSpecs, specsInDir } from "./run-spec.js";
-import { processAlive, reclaimIfStale } from "./slots.js";
+import { openExclusive, processAlive, reclaimIfStale } from "./slots.js";
 import { isMainModule, parseCli } from "./spec/util.js";
 
 export const EXIT_NOT_FINISHED = 4;
@@ -135,7 +135,7 @@ async function takeWorkerLock(receiptsDir) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let handle;
     try {
-      handle = await open(path, "wx");
+      handle = await openExclusive(path);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       if (await reclaimIfStale(path, { maxAgeMs: WORKER_STALE_MS })) continue;
@@ -149,14 +149,21 @@ async function takeWorkerLock(receiptsDir) {
       throw error;
     }
     await handle.close();
+    // The lock is only ever refreshed or removed while it still names this process: a worker that was suspended long enough for
+    // its lock to be taken over (the machine slept) must not write over, or delete, the new holder's lock.
+    const ours = async () => { const owner = await readWorkerLock(receiptsDir); return owner === null || owner.pid === process.pid; };
     const give = () => rmSync(path, { force: true });
     process.once("exit", give);
-    const beat = setInterval(() => { writeJson(path, { pid: process.pid, host: hostname(), at: Date.now() }).catch(() => {}); }, WORKER_HEARTBEAT_MS);
+    let beating = Promise.resolve();
+    const beat = setInterval(() => {
+      beating = beating.then(async () => { if (await ours()) await writeJson(path, { pid: process.pid, host: hostname(), at: Date.now() }); }).catch(() => {});
+    }, WORKER_HEARTBEAT_MS);
     beat.unref();
     return async () => {
       clearInterval(beat);
       process.removeListener("exit", give);
-      await rm(path, { force: true });
+      await beating; // a refresh already under way must not land after the lock is removed and bring it back
+      if (await ours()) await rm(path, { force: true });
     };
   }
   return null;
@@ -178,7 +185,7 @@ const claimPath = (receiptsDir, id) => join(queueRoot(receiptsDir), "running", `
 
 async function takeClaim(receiptsDir, id) {
   try {
-    const handle = await open(claimPath(receiptsDir, id), "wx");
+    const handle = await openExclusive(claimPath(receiptsDir, id));
     await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname() }));
     await handle.close();
     return true;
@@ -186,6 +193,15 @@ async function takeClaim(receiptsDir, id) {
     if (error.code === "EEXIST") return false;
     throw error;
   }
+}
+
+// A claimed job that never started (no run began) goes back to queued/ and its claim is dropped. Best effort: if this fails too,
+// the next worker's settleOrphans does the same, because the job still says state "queued".
+async function putBack(receiptsDir, id) {
+  try {
+    await renameWithRetry(jobPath(receiptsDir, "running", id), jobPath(receiptsDir, "queued", id));
+    await rm(claimPath(receiptsDir, id), { force: true });
+  } catch { /* settled by the next worker */ }
 }
 
 // Takes the oldest queued job that nobody has claimed, or null.
@@ -204,7 +220,7 @@ async function claimNext(receiptsDir) {
     try {
       job = await readJob(to);
     } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error; // a read that failed is not a damaged file: the job stays in running/ and is settled, not lost
+      if (!(error instanceof SyntaxError)) { await putBack(receiptsDir, id); throw error; } // a failed read is not a damaged file
       job = null;
     }
     if (!job) { // damaged: set it aside where no listing reads it, and go on
@@ -212,7 +228,12 @@ async function claimNext(receiptsDir) {
       continue;
     }
     const started = { ...job, state: "running", startedAt: new Date().toISOString(), workerPid: process.pid, workerHost: hostname() };
-    await writeJson(to, started);
+    try {
+      await writeJson(to, started);
+    } catch (error) {
+      await putBack(receiptsDir, id); // nothing has run yet: the job goes back to the queue instead of being stranded
+      throw error;
+    }
     return started;
   }
   return null;
@@ -258,8 +279,14 @@ async function settleOrphans(receiptsDir) {
   for (const id of await jobIds(receiptsDir, "running")) {
     const job = await readJob(jobPath(receiptsDir, "running", id)).catch(() => null);
     if (!job || (job.workerHost ?? job.host) !== hostname()) continue; // another host's worker may still be running it
+    if (job.state === "queued") { // claimed, but the worker stopped before it started anything: it is queued again, not lost
+      await putBack(receiptsDir, id);
+      continue;
+    }
     if (job.state !== "running") { // it was filed, and the worker stopped before the move to done/: the result stands
-      await renameWithRetry(jobPath(receiptsDir, "running", id), jobPath(receiptsDir, "done", id));
+      const filed = await readJob(jobPath(receiptsDir, "done", id)).catch(() => null);
+      if (filed) await rm(jobPath(receiptsDir, "running", id), { force: true }); // never replace a result already in done/
+      else await renameWithRetry(jobPath(receiptsDir, "running", id), jobPath(receiptsDir, "done", id));
       continue;
     }
     await finish(receiptsDir, job, { state: "interrupted", exitCode: 2, results: job.results ?? [], error: "the worker stopped before this job finished; some specs may have written receipts (see `list`); submit the job again" });

@@ -26,7 +26,7 @@ environment is refused. Receipts go to `receipts/` unless `--receipts <dir>` or 
 `run` takes `--spec` more than once and runs the specs concurrently, asynchronously in one process: at most two runs per
 worker (`os.availableParallelism()`; a browser run mostly waits, so a core serves more than one), and no more than memory allows (about 1 GiB per run, 75% of the machine's memory).
 A governor also holds each new run back while free memory is low, CPU use is above 85% or the load average per core is above
-1.25 (new runs start one at a time, with a short settle pause, so a burst cannot overload the machine); with nothing running it
+1.25 (new runs start one at a time, each judged on CPU measured over a fresh quarter-second window that already includes the run started before it, so a burst cannot overload the machine); with nothing running it
 always lets one start, so the batch always finishes. `--jobs N` lowers the ceiling; a higher number is cut to it, with a note. Each run is independent: its own browser, its own app server on a free port, its own receipt and evidence file. A spec
 that cannot be read, or a run that stops, is an ERROR for that spec only; the others go on. The results print in the order of
 the `--spec` flags (`--json` prints a list), then one line of totals ("N of M specs run"). `--spec-dir <dir>` adds every `.json` file of a

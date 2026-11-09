@@ -9,8 +9,7 @@ export const MEMORY_RESERVE_BYTES = 1024 ** 3;    // always left for the OS and 
 export const TOTAL_MEMORY_SHARE = 0.75;           // the most of the machine's memory the runs may be planned against
 export const CPU_BUSY_LIMIT = 0.85;               // no new run while the CPUs are busier than this
 export const LOAD_PER_CORE_LIMIT = 1.25;          // no new run while the 1-minute load average per core is above this (POSIX)
-export const SETTLE_MS = 250;                    // a started run needs time to show in the numbers before the next is judged
-export const SAMPLE_MS = 250;                    // the window the CPU is measured over at each admission
+export const SAMPLE_MS = 250;                    // the window the CPU is measured over at each admission: also what a started run needs to show in the numbers
 export const POLL_MS = 1000;
 
 // A browser run mostly waits (for the page, the network, the app), so a worker serves more than one run. The governor, not this
@@ -81,7 +80,9 @@ export function createGovernor({ read = readMachine, sleep = sleepMs, perRun = R
         }
         const release = await acquire();
         if (release) {
-          if (running() > 0) await sleep(SETTLE_MS);
+          // No pause here: the next admission measures CPU over a fresh window that starts right now, so the run just admitted
+          // is already in what it sees. (A settle pause on top doubled the cost of every admission and capped a burst of short
+          // specs at two starts a second, which is why more jobs bought nothing.)
           active += 1;
           let given = false;
           return async () => {

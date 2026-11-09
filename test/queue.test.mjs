@@ -47,6 +47,17 @@ test("slots: no more than `limit` are held at once, and a given-back slot can be
   assert.equal(await slotsInUse(2, dir), 0);
 });
 
+test("slots: an exclusive create reports a taken file at once (EEXIST) and treats a delete-pending refusal as transient", async t => {
+  const dir = await tempDir(t);
+  const { openExclusive, isTransientCreateError } = await import("../src/slots.js");
+  const path = join(dir, "x.lock");
+  await (await openExclusive(path)).close();
+  await assert.rejects(openExclusive(path), { code: "EEXIST" });
+  for (const code of ["EPERM", "EACCES", "EBUSY"]) assert.equal(isTransientCreateError({ code }), true);
+  assert.equal(isTransientCreateError({ code: "EEXIST" }), false);
+  assert.equal(isTransientCreateError({ code: "ENOSPC" }), false);
+});
+
 test("slots: a slot whose holder is gone is reclaimed; a live one is not", async t => {
   const dir = await tempDir(t);
   await writeFile(join(dir, "slot-0.lock"), JSON.stringify({ pid: DEAD_PID, at: Date.now() }));
@@ -277,6 +288,36 @@ test("queue: a job filed as done but not yet moved when its worker died keeps it
   const { code, out } = await q(["status", "--id", id, "--json"]);
   assert.equal(code, 1, "the real exit code stands");
   assert.equal(JSON.parse(out).state, "done");
+});
+
+test("queue: a job claimed but never started when its worker died is queued again and runs, not stranded as queued in done/", async t => {
+  const { spec, receipts, q, submit } = await setup(t);
+  const id = await submit(spec);
+  const job = await findJob(receipts, id);
+  const { rename } = await import("node:fs/promises");
+  await mkdir(join(receipts, ".queue", "running"), { recursive: true });
+  await rename(join(receipts, ".queue", "queued", `${id}.json`), join(receipts, ".queue", "running", `${id}.json`)); // the claim, then death
+  await writeFile(join(receipts, ".queue", "running", `${id}.claim`), JSON.stringify({ pid: DEAD_PID, host: hostname() }));
+  assert.equal(job.state, "queued");
+  let runs = 0;
+  await workQueue(receipts, { idleExitSeconds: 0, pollMs: 10, loadKey: fakeLoadKey, run: async specs => { runs += 1; return specs.map(passing); } });
+  assert.equal(runs, 1, "no run began before, so it is run now");
+  const { code, out } = await q(["status", "--id", id, "--json"]);
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(out).state, "done");
+});
+
+test("queue: settling a leftover never replaces a result already in done/", async t => {
+  const { spec, receipts, q, submit } = await setup(t);
+  const id = await submit(spec);
+  const job = await findJob(receipts, id);
+  const base = join(receipts, ".queue");
+  await rm(join(base, "queued", `${id}.json`));
+  await writeFile(join(base, "done", `${id}.json`), JSON.stringify({ ...job, state: "done", exitCode: 1, results: [] }));
+  await writeFile(join(base, "running", `${id}.json`), JSON.stringify({ ...job, state: "done", exitCode: 0, workerHost: hostname(), results: [] }));
+  await workQueue(receipts, { idleExitSeconds: 0, pollMs: 10, loadKey: fakeLoadKey, run: async () => assert.fail("not run") });
+  assert.equal((await q(["status", "--id", id])).code, 1, "the filed result stands");
+  assert.deepEqual((await readdir(join(base, "running"))).filter(name => name.endsWith(".json")), []);
 });
 
 test("queue: a job that another host's worker holds is left alone by this host's worker", async t => {

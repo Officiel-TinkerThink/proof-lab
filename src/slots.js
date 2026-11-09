@@ -25,6 +25,21 @@ export function processAlive(pid) {
   }
 }
 
+// Windows answers EPERM/EACCES/EBUSY to a create of a file that was just removed while a handle (a scanner, the remover) still
+// keeps it delete-pending. That passes within a moment, so the create is retried a few times; EEXIST and anything else throw.
+const TRANSIENT_CREATE = new Set(["EPERM", "EACCES", "EBUSY"]);
+export const isTransientCreateError = error => TRANSIENT_CREATE.has(error?.code);
+export async function openExclusive(path, { attempts = 5, waitMs = 50 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await open(path, "wx");
+    } catch (error) {
+      if (attempt >= attempts || !isTransientCreateError(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
 async function readOwner(path) {
   try {
     const owner = JSON.parse(await readFile(path, "utf8"));
@@ -78,15 +93,23 @@ function giveBackOnExit() {
 // A slot (a function that gives it back, once) or null when all `limit` slots are held. Never waits.
 export async function tryAcquireSlot(limit, dir = slotsDir()) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  let blocked = null; // a slot that could not even be tried (permissions); it is not "held", so it must not look like a full pool
+  let seenHeld = false;
   for (let n = 0; n < limit; n += 1) {
     const path = join(dir, `slot-${n}.lock`);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let handle;
       try {
-        handle = await open(path, "wx");
+        handle = await openExclusive(path);
       } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-        if (attempt === 0 && await reclaimIfStale(path)) continue;
+        if (error.code === "EEXIST") {
+          seenHeld = true;
+          if (attempt === 0 && await reclaimIfStale(path)) continue;
+        } else if (isTransientCreateError(error)) {
+          blocked = error; // still delete-pending after the retries: try the next slot, the caller polls again
+        } else {
+          throw error;
+        }
         break;
       }
       try {
@@ -116,6 +139,7 @@ export async function tryAcquireSlot(limit, dir = slotsDir()) {
       };
     }
   }
+  if (blocked && !seenHeld) throw blocked; // every slot refused with a permission error and none is held: waiting would never end
   return null;
 }
 
