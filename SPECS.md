@@ -54,6 +54,16 @@ GPU and network processes and the DNS cache (web research found no primary sourc
 to decide; leave the flag off where an independent browser per run is what the receipt must show. A browser that disappears under
 any run, shared or not, is ERROR, never a verdict on the app.
 
+**Sizing, by napkin math.** The ceiling is `min(2 x cores, floor(0.75 x memory / 1 GiB))`: 14 cores and 23 GiB give 17 runs, 8 cores
+and 11.7 GiB give 8, a container with `--memory=3g --cpus=4` gives 2, one with `--memory=1500m --cpus=2` gives 1. The 1 GiB per run is a
+planning number for a heavy page, not a measurement: on the short built-in waitlist spec (32 specs, all PASS) a run measured about
+30 to 60 MB of Chromium (about 20 to 25 MB sharing a browser), so for small specs memory is far from the limit and CPU is the real
+one. Measured CPU per spec was about 3 core-seconds with a browser of its own on Windows (most of it launching the browser) and
+about 1 with `--share-browser`, which gave 2.9 to 3.9 specs/s on 14 cores one browser per run against 6.8 to 9.3 sharing; on
+Ubuntu 24.04 with 8 CPUs, 6.1 and 8.9 specs/s. So 1,000 short specs take about 5 minutes with a browser each and about 2 minutes sharing.
+For your own specs: run one, note its peak Chromium memory and how long it takes, then `jobs = min(2 x cores, 0.75 x memory / peak
+per run)`. The numbers above come from trivial specs on two machines; real specs are not measured.
+
 Separate `run` processes may also share one receipts directory at the same time. A receipt's `at` is stamped as it joins
 the chain, inside the lock, so whichever run finishes first comes first and no run refuses another.
 
